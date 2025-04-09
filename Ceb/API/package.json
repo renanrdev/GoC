@@ -1,8 +1,8 @@
 {
-    "name": "multi-ai-photo-api",
-    "version": "1.0.0",
-    "description": "API que extrai perguntas de fotos e obtém respostas de múltiplos modelos de IA",
-    "main": "app.js",
+    "name": "api-analise-questoes",
+  "version": "1.0.0",
+  "description": "API para análise de questões usando diversos modelos de IA",
+  "main": "app.js",
     "scripts": {
         "start": "node app.js",
         "dev": "nodemon app.js",
@@ -16,7 +16,7 @@
         "gemini",
         "api"
     ],
-    "author": "Seu Nome",
+    "author": "Ribs",
     "license": "MIT",
     "dependencies": {
         "@anthropic-ai/sdk": "^0.39.0",
@@ -27,6 +27,8 @@
         "multer": "^1.4.5-lts.1",
         "openai": "^4.24.1",
         "sharp": "^0.34.1",
+        "swagger-jsdoc": "^6.2.8",
+        "swagger-ui-express": "^5.0.1",
         "tesseract.js": "^6.0.1"
     },
     "devDependencies": {

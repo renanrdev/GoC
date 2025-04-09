@@ -1,4 +1,3 @@
-// app.js - Servidor principal da API
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
@@ -8,6 +7,8 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
+const swaggerUi = require('swagger-ui-express');
+const swaggerSpec = require('./swagger');
 
 const { 
   extractTextFromImage, 
@@ -910,7 +911,39 @@ async function saveResponseToFile(text) {
   }
 }
 
-// Rota para analisar imagens
+
+/**
+ * @swagger
+ * /api/analyze:
+ *   post:
+ *     summary: Analisa uma imagem de questão
+ *     description: |
+ *       Recebe uma imagem contendo uma questão de múltipla escolha, extrai o texto usando OCR,
+ *       e consulta múltiplos modelos de IA para determinar a alternativa correta.
+ *       
+ *       O sistema consulta os seguintes modelos (quando disponíveis):
+ *       - Claude (Anthropic)
+ *       - GPT (OpenAI)
+ *       - Gemini (Google)
+ *       - DeepSeek
+ *       - Maritaca (Sabiá)
+ *       
+ *       A API retorna a resposta consensual entre os modelos, além das respostas individuais.
+ *     tags: [Análise]
+ *     consumes:
+ *       - multipart/form-data
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *                 description: Imagem da questão a ser analisada (PNG, JPG, JPEG)
+ */
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
   try {
     // Extrair texto e itens da imagem
@@ -1030,17 +1063,44 @@ Mantenha a explicação objetiva e direta, com no máximo 2-3 frases.
   }
 });
 
-// Rota básica para verificar se a API está funcionando
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: Verifica status da API
+ *     description: Retorna um status simples para confirmar que a API está online e informações básicas
+ *     tags: [Status]
+ *     responses:
+ *       200:
+ *         description: API está funcionando
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/StatusResponse'
+ */
 app.get('/', (req, res) => {
+  const startTime = process.uptime();
+  const packageJson = require('./package.json');
+  
   res.json({
     status: 'online',
-    message: 'API de análise de imagens com IA está funcionando'
+    message: 'API de análise de imagens com IA está funcionando',
+    version: packageJson.version,
+    uptime: Math.floor(startTime)
   });
 });
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  explorer: true,
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: "API de Análise de Questões - Documentação",
+  customfavIcon: ""
+}));
 
 // Iniciar o servidor
 app.listen(port, () => {
   console.log(`Servidor rodando na porta ${port}`);
+  console.log(`Documentação Swagger disponível em http://localhost:${port}/api-docs`);
 });
 
 module.exports = app;
