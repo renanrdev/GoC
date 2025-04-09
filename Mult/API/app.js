@@ -1,6 +1,3 @@
-const punycode = require('punycode');
-
-// app.js - Servidor principal da API
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
@@ -10,12 +7,14 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
+const swaggerUi = require('swagger-ui-express');
+const swaggerSpec = require('./swagger');
 
-const { 
-    extractTextFromImage, 
-    extractQuestion 
-  } = require('./imageProcessor');
-  const ocrConfig = require('./ocrConfig');
+const {
+  extractTextFromImage,
+  extractQuestion
+} = require('./imageProcessor');
+const ocrConfig = require('./ocrConfig');
 
 // Carregar variáveis de ambiente
 dotenv.config();
@@ -77,26 +76,26 @@ app.use('/responses', express.static(path.join(__dirname, 'responses')));
 
 // Configurações de upload de arquivos
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/');
-    },
-    filename: (req, file, cb) => {
-      cb(null, Date.now() + path.extname(file.originalname));
-    }
-  });
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname));
+  }
+});
 
-  const upload = multer({
-    storage: storage,
-    limits: { 
-      fileSize: ocrConfig.imagePreprocessing.maxImageSizeMB * 1024 * 1024 
-    },
-    fileFilter: (req, file, cb) => {
-      if (!file.mimetype.startsWith('image/')) {
-        return cb(new Error('Apenas imagens são permitidas'));
-      }
-      cb(null, true);
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: ocrConfig.imagePreprocessing.maxImageSizeMB * 1024 * 1024
+  },
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith('image/')) {
+      return cb(new Error('Apenas imagens são permitidas'));
     }
-  });
+    cb(null, true);
+  }
+});
 
 // Inicializar clientes de IA
 let anthropic = null;
@@ -113,7 +112,7 @@ try {
     });
     console.log("Cliente Anthropic (Claude) inicializado com sucesso");
 
-    
+
     // Verificar qual tipo de API está disponível
     if (anthropic.messages && anthropic.messages.create) {
       console.log("API do Claude usando messages.create");
@@ -124,7 +123,7 @@ try {
     } else {
       console.log("AVISO: Interface da API do Claude não reconhecida");
     }
-    
+
   } else {
     console.log("Chave de API do Anthropic não configurada");
   }
@@ -201,7 +200,7 @@ async function askClaude(question) {
       console.log('Cliente do Claude não está configurado');
       return null;
     }
-    
+
     // Modificar o prompt para obter apenas a alternativa correta
     const enhancedPrompt = `
 ${question}
@@ -212,23 +211,23 @@ INSTRUÇÕES IMPORTANTES:
 - Retorne SOMENTE a alternativa correta, ex: "A alternativa correta é (B)"
 - Seja direto e objetivo
 `;
-    
+
     // Verificar se temos acesso à Messages API (única compatível com Claude 3.x)
     if (typeof anthropic.messages === 'object' && typeof anthropic.messages.create === 'function') {
       // Configuração de retry
       const MAX_RETRIES = 2;
       const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-      
+
       // Tentar cada modelo sequencialmente
       for (const modelName of CLAUDE_MODELS) {
         let retryCount = 0;
         let retryDelay = INITIAL_RETRY_DELAY;
-        
+
         while (retryCount <= MAX_RETRIES) {
           try {
-            console.log(`Consultando Claude usando modelo ${modelName}` + 
-                        (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-            
+            console.log(`Consultando Claude usando modelo ${modelName}` +
+              (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
+
             const response = await anthropic.messages.create({
               model: modelName,
               max_tokens: 1000,
@@ -236,60 +235,60 @@ INSTRUÇÕES IMPORTANTES:
                 { role: 'user', content: enhancedPrompt }
               ]
             });
-            
+
             const responseText = response.content[0].text;
-            
+
             // Processar a resposta para extrair apenas a alternativa
             const alternativeMatch = responseText.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
             if (alternativeMatch) {
               return `A alternativa correta é (${alternativeMatch[2]})`;
             }
-            
+
             // Se não encontrou o padrão específico, tenta outro formato
             const letterMatch = responseText.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/);
             if (letterMatch) {
               return `A alternativa correta é (${letterMatch[1]})`;
             }
-            
+
             // Retornar o texto original se não encontrou nenhum padrão conhecido
             return responseText;
-            
+
           } catch (retryError) {
             // Verificar tipos de erros
-            const isOverloaded = 
-              retryError.status === 529 || 
+            const isOverloaded =
+              retryError.status === 529 ||
               (retryError.error?.error?.type === 'overloaded_error') ||
               (retryError.headers && retryError.headers['x-should-retry'] === 'true');
-            
-            const isModelNotFound = 
+
+            const isModelNotFound =
               retryError.status === 404 ||
               retryError.message?.includes('model not found') ||
               retryError.message?.includes('does not exist') ||
               retryError.message?.includes('not supported');
-            
+
             // Se o modelo não existir, pular para o próximo
             if (isModelNotFound) {
               console.log(`Modelo ${modelName} não encontrado ou não suportado, tentando próximo modelo...`);
               break; // Sai do loop while para tentar o próximo modelo
             }
-            
+
             // Se for o último retry ou não for um erro de sobrecarga, tentar próximo modelo
             if (retryCount >= MAX_RETRIES || !isOverloaded) {
               console.log(`Erro com modelo ${modelName}, tentando próximo modelo...`);
               break; // Sai do loop while para tentar o próximo modelo
             }
-            
+
             // Calcular atraso para o próximo retry (backoff exponencial)
-            console.log(`Servidor do Claude sobrecarregado. Aguardando ${retryDelay/1000} segundos para retry...`);
+            console.log(`Servidor do Claude sobrecarregado. Aguardando ${retryDelay / 1000} segundos para retry...`);
             await new Promise(resolve => setTimeout(resolve, retryDelay));
-            
+
             // Aumentar o contador e o atraso para o próximo retry
             retryCount++;
             retryDelay *= 2; // Backoff exponencial
           }
         }
       }
-      
+
       // Se chegou aqui, é porque todos os modelos falharam
       console.error('Todos os modelos Claude falharam');
       return null;
@@ -305,14 +304,14 @@ INSTRUÇÕES IMPORTANTES:
 }
 
 async function askGPT(question) {
-    try {
-      if (!openai) {
-        console.log('Cliente do GPT não está configurado');
-        return null;
-      }
-      
-      // Prompt melhorado com instruções mais claras e formato estruturado
-      const enhancedPrompt = `
+  try {
+    if (!openai) {
+      console.log('Cliente do GPT não está configurado');
+      return null;
+    }
+
+    // Prompt melhorado com instruções mais claras e formato estruturado
+    const enhancedPrompt = `
   ${question}
   
   INSTRUÇÕES IMPORTANTÍSSIMAS (SIGA EXATAMENTE ESTE FORMATO):
@@ -330,116 +329,116 @@ async function askGPT(question) {
   
   LEMBRE-SE: Responda APENAS com "A alternativa correta é (X)" e nada mais.
   `;
-      
-      // Configuração de retry
-      const MAX_RETRIES = 2;
-      const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-      
-      let retryCount = 0;
-      let retryDelay = INITIAL_RETRY_DELAY;
-      
-      // Usar a lista de modelos da configuração global
-      const models = GPT_MODELS;
-      
-      // Tentar cada modelo até obter sucesso
-      for (const model of models) {
-        retryCount = 0;
-        
-        while (retryCount <= MAX_RETRIES) {
-          try {
-            console.log(`Consultando GPT usando modelo ${model}` + 
-                       (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-            
-            const response = await openai.chat.completions.create({
-              model: model,
-              messages: [
-                { role: 'system', content: 'Você é um assistente especializado em responder questões de múltipla escolha com extrema precisão e concisão. Siga EXATAMENTE o formato solicitado.' },
-                { role: 'user', content: enhancedPrompt }
-              ],
-              max_tokens: 50,  // Reduzido para evitar respostas longas
-              temperature: 0.1 // Temperatura baixa para respostas mais previsíveis
-            });
-            
-            const responseText = response.choices[0].message.content.trim();
-            
-            // Processamento mais robusto para extrair a alternativa correta
-            const alternativeMatch = responseText.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
-            if (alternativeMatch) {
-              return `A alternativa correta é (${alternativeMatch[2]})`;
-            }
-            
-            // Verificar formato mais simples - apenas letra entre parênteses
-            const parenMatch = responseText.match(/\(([A-E])\)/i);
-            if (parenMatch) {
-              return `A alternativa correta é (${parenMatch[1]})`;
-            }
-            
-            // Verificar se a resposta é apenas uma letra
-            const letterMatch = responseText.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/i);
-            if (letterMatch) {
-              return `A alternativa correta é (${letterMatch[1]})`;
-            }
-            
-            // Verificar se a resposta contém algo como "Letra X" ou "Opção X"
-            const letterRefMatch = responseText.match(/(?:letra|opção|alternativa)\s+([A-E])/i);
-            if (letterRefMatch) {
-              return `A alternativa correta é (${letterRefMatch[1]})`;
-            }
-            
-            // Se ainda não conseguiu extrair um padrão conhecido, mas tem uma letra válida em algum lugar
-            const anyLetterMatch = responseText.match(/([A-E])[^A-Za-z]/i);
-            if (anyLetterMatch) {
-              return `A alternativa correta é (${anyLetterMatch[1]})`;
-            }
-            
-            // Se ainda não conseguimos extrair, tentar novamente com outro modelo
-            console.log(`Formato de resposta não reconhecido: "${responseText}"`);
-            break;
-            
-          } catch (retryError) {
-            // Verificar se é um erro de quota ou rate limit
-            const isRetryable = 
-              retryError.status === 429 ||
-              retryError.code === 'insufficient_quota' ||
-              retryError.message?.includes('rate limit') ||
-              retryError.message?.includes('quota');
-            
-            // Verificar se o erro é devido ao modelo não existir
-            const isModelNotFound = 
-              retryError.message?.includes('model not found') ||
-              retryError.message?.includes('does not exist');
-            
-            // Se for erro de modelo, passamos para o próximo modelo
-            if (isModelNotFound) {
-              console.log(`Modelo ${model} não encontrado, tentando próximo modelo...`);
-              break; // Sai do loop while para tentar o próximo modelo
-            }
-            
-            // Se for o último retry ou não for um erro retryable, passamos para o próximo modelo
-            if (retryCount >= MAX_RETRIES || !isRetryable) {
-              console.log(`Erro com modelo ${model}, tentando próximo modelo...`);
-              break; // Sai do loop while para tentar o próximo modelo
-            }
-            
-            // Calcular atraso para o próximo retry (backoff exponencial)
-            console.log(`Limite de taxa excedido para ${model}. Aguardando ${retryDelay/1000} segundos para retry...`);
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
-            
-            // Aumentar o contador e o atraso para o próximo retry
-            retryCount++;
-            retryDelay *= 2; // Backoff exponencial
+
+    // Configuração de retry
+    const MAX_RETRIES = 2;
+    const INITIAL_RETRY_DELAY = 1000; // 1 segundo
+
+    let retryCount = 0;
+    let retryDelay = INITIAL_RETRY_DELAY;
+
+    // Usar a lista de modelos da configuração global
+    const models = GPT_MODELS;
+
+    // Tentar cada modelo até obter sucesso
+    for (const model of models) {
+      retryCount = 0;
+
+      while (retryCount <= MAX_RETRIES) {
+        try {
+          console.log(`Consultando GPT usando modelo ${model}` +
+            (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
+
+          const response = await openai.chat.completions.create({
+            model: model,
+            messages: [
+              { role: 'system', content: 'Você é um assistente especializado em responder questões de múltipla escolha com extrema precisão e concisão. Siga EXATAMENTE o formato solicitado.' },
+              { role: 'user', content: enhancedPrompt }
+            ],
+            max_tokens: 50,  // Reduzido para evitar respostas longas
+            temperature: 0.1 // Temperatura baixa para respostas mais previsíveis
+          });
+
+          const responseText = response.choices[0].message.content.trim();
+
+          // Processamento mais robusto para extrair a alternativa correta
+          const alternativeMatch = responseText.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
+          if (alternativeMatch) {
+            return `A alternativa correta é (${alternativeMatch[2]})`;
           }
+
+          // Verificar formato mais simples - apenas letra entre parênteses
+          const parenMatch = responseText.match(/\(([A-E])\)/i);
+          if (parenMatch) {
+            return `A alternativa correta é (${parenMatch[1]})`;
+          }
+
+          // Verificar se a resposta é apenas uma letra
+          const letterMatch = responseText.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/i);
+          if (letterMatch) {
+            return `A alternativa correta é (${letterMatch[1]})`;
+          }
+
+          // Verificar se a resposta contém algo como "Letra X" ou "Opção X"
+          const letterRefMatch = responseText.match(/(?:letra|opção|alternativa)\s+([A-E])/i);
+          if (letterRefMatch) {
+            return `A alternativa correta é (${letterRefMatch[1]})`;
+          }
+
+          // Se ainda não conseguiu extrair um padrão conhecido, mas tem uma letra válida em algum lugar
+          const anyLetterMatch = responseText.match(/([A-E])[^A-Za-z]/i);
+          if (anyLetterMatch) {
+            return `A alternativa correta é (${anyLetterMatch[1]})`;
+          }
+
+          // Se ainda não conseguimos extrair, tentar novamente com outro modelo
+          console.log(`Formato de resposta não reconhecido: "${responseText}"`);
+          break;
+
+        } catch (retryError) {
+          // Verificar se é um erro de quota ou rate limit
+          const isRetryable =
+            retryError.status === 429 ||
+            retryError.code === 'insufficient_quota' ||
+            retryError.message?.includes('rate limit') ||
+            retryError.message?.includes('quota');
+
+          // Verificar se o erro é devido ao modelo não existir
+          const isModelNotFound =
+            retryError.message?.includes('model not found') ||
+            retryError.message?.includes('does not exist');
+
+          // Se for erro de modelo, passamos para o próximo modelo
+          if (isModelNotFound) {
+            console.log(`Modelo ${model} não encontrado, tentando próximo modelo...`);
+            break; // Sai do loop while para tentar o próximo modelo
+          }
+
+          // Se for o último retry ou não for um erro retryable, passamos para o próximo modelo
+          if (retryCount >= MAX_RETRIES || !isRetryable) {
+            console.log(`Erro com modelo ${model}, tentando próximo modelo...`);
+            break; // Sai do loop while para tentar o próximo modelo
+          }
+
+          // Calcular atraso para o próximo retry (backoff exponencial)
+          console.log(`Limite de taxa excedido para ${model}. Aguardando ${retryDelay / 1000} segundos para retry...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+          // Aumentar o contador e o atraso para o próximo retry
+          retryCount++;
+          retryDelay *= 2; // Backoff exponencial
         }
       }
-      
-      // Se chegou aqui, é porque nenhum modelo funcionou
-      console.error('Todos os modelos GPT falharam');
-      return null;
-    } catch (error) {
-      console.error('Erro ao consultar GPT:', error);
-      return null;
     }
+
+    // Se chegou aqui, é porque nenhum modelo funcionou
+    console.error('Todos os modelos GPT falharam');
+    return null;
+  } catch (error) {
+    console.error('Erro ao consultar GPT:', error);
+    return null;
   }
+}
 
 // Função para obter resposta do Gemini
 async function askGemini(question) {
@@ -448,7 +447,7 @@ async function askGemini(question) {
       console.log('Cliente do Gemini não está configurado');
       return null;
     }
-    
+
     // Modificar o prompt para obter apenas a alternativa correta
     const enhancedPrompt = `
 ${question}
@@ -459,68 +458,68 @@ INSTRUÇÕES IMPORTANTES:
 - Retorne SOMENTE a alternativa correta, ex: "A alternativa correta é (B)"
 - Seja direto e objetivo
 `;
-    
+
     // Configuração de retry
     const MAX_RETRIES = 2;
     const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-    
+
     // Usar a lista de modelos da configuração global
     const modelOptions = GEMINI_MODELS;
-    
+
     // Para cada modelo, tente com retries
     for (const modelName of modelOptions) {
       let retryCount = 0;
       let retryDelay = INITIAL_RETRY_DELAY;
-      
+
       while (retryCount <= MAX_RETRIES) {
         try {
           console.log(`Consultando Gemini usando modelo ${modelName}` +
-                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-          
+            (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
+
           const model = genAI.getGenerativeModel({ model: modelName });
           const result = await model.generateContent(enhancedPrompt);
           const response = await result.response;
           const text = response.text();
-          
+
           // Processar a resposta para extrair apenas a alternativa
           const alternativeMatch = text.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
           if (alternativeMatch) {
             return `A alternativa correta é (${alternativeMatch[2]})`;
           }
-          
+
           // Se não encontrou o padrão específico, tenta outro formato
           const letterMatch = text.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/);
           if (letterMatch) {
             return `A alternativa correta é (${letterMatch[1]})`;
           }
-          
+
           // Retornar o texto original se não encontrou nenhum padrão conhecido
           return text;
-          
+
         } catch (retryError) {
           console.error(`Erro ao usar modelo ${modelName}:`, retryError.message);
-          
+
           // Verificar se é o último retry
           if (retryCount >= MAX_RETRIES) {
             console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
             break;
           }
-          
+
           // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Aguardando ${retryDelay/1000} segundos para retry...`);
+          console.log(`Aguardando ${retryDelay / 1000} segundos para retry...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
-          
+
           // Aumentar o contador e o atraso para o próximo retry
           retryCount++;
           retryDelay *= 2; // Backoff exponencial
         }
       }
     }
-    
+
     // Se chegou aqui, é porque todos os modelos falharam
     console.error('Todos os modelos Gemini falharam');
     return null;
-    
+
   } catch (error) {
     console.error('Erro ao consultar Gemini:', error);
     return null;
@@ -534,7 +533,7 @@ async function askDeepSeek(question) {
       console.log('Cliente do DeepSeek não está configurado');
       return null;
     }
-    
+
     // Modificar o prompt para obter apenas a alternativa correta
     const enhancedPrompt = `
 ${question}
@@ -545,21 +544,21 @@ INSTRUÇÕES IMPORTANTES:
 - Retorne SOMENTE a alternativa correta, ex: "A alternativa correta é (B)"
 - Seja direto e objetivo
 `;
-    
+
     // Configuração de retry
     const MAX_RETRIES = 2;
     const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-    
+
     // Para cada modelo, tente com retries
     for (const modelName of DEEPSEEK_MODELS) {
       let retryCount = 0;
       let retryDelay = INITIAL_RETRY_DELAY;
-      
+
       while (retryCount <= MAX_RETRIES) {
         try {
           console.log(`Consultando DeepSeek usando modelo ${modelName}` +
-                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-          
+            (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
+
           const response = await deepseek.chat.completions.create({
             model: modelName,
             messages: [
@@ -569,59 +568,59 @@ INSTRUÇÕES IMPORTANTES:
             temperature: 0.3,
             max_tokens: 1000
           });
-          
+
           const responseText = response.choices[0].message.content;
-          
+
           // Processar a resposta para extrair apenas a alternativa
           const alternativeMatch = responseText.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
           if (alternativeMatch) {
             return `A alternativa correta é (${alternativeMatch[2]})`;
           }
-          
+
           // Se não encontrou o padrão específico, tenta outro formato
           const letterMatch = responseText.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/);
           if (letterMatch) {
             return `A alternativa correta é (${letterMatch[1]})`;
           }
-          
+
           // Retornar o texto original se não encontrou nenhum padrão conhecido
           return responseText;
-          
+
         } catch (retryError) {
           console.error(`Erro ao usar modelo ${modelName}:`, retryError.message);
-          
+
           // Verificar se é erro de modelo não encontrado
-          const isModelNotFound = 
+          const isModelNotFound =
             retryError.message?.includes('model not found') ||
             retryError.message?.includes('does not exist');
-          
+
           // Se for erro de modelo, passamos para o próximo modelo
           if (isModelNotFound) {
             console.log(`Modelo ${modelName} não encontrado, tentando próximo modelo...`);
             break; // Sai do loop while para tentar o próximo modelo
           }
-          
+
           // Verificar se é o último retry
           if (retryCount >= MAX_RETRIES) {
             console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
             break;
           }
-          
+
           // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Aguardando ${retryDelay/1000} segundos para retry...`);
+          console.log(`Aguardando ${retryDelay / 1000} segundos para retry...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
-          
+
           // Aumentar o contador e o atraso para o próximo retry
           retryCount++;
           retryDelay *= 2; // Backoff exponencial
         }
       }
     }
-    
+
     // Se chegou aqui, é porque todos os modelos falharam
     console.error('Todos os modelos DeepSeek falharam');
     return null;
-    
+
   } catch (error) {
     console.error('Erro ao consultar DeepSeek:', error);
     return null;
@@ -635,7 +634,7 @@ async function askMaritaca(question) {
       console.log('Cliente do Maritaca não está configurado');
       return null;
     }
-    
+
     // Modificar o prompt para obter apenas a alternativa correta
     const enhancedPrompt = `
 ${question}
@@ -646,21 +645,21 @@ INSTRUÇÕES IMPORTANTES:
 - Retorne SOMENTE a alternativa correta, ex: "A alternativa correta é (B)"
 - Seja direto e objetivo
 `;
-    
+
     // Configuração de retry
     const MAX_RETRIES = 2;
     const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-    
+
     // Para cada modelo, tente com retries
     for (const modelName of MARITACA_MODELS) {
       let retryCount = 0;
       let retryDelay = INITIAL_RETRY_DELAY;
-      
+
       while (retryCount <= MAX_RETRIES) {
         try {
           console.log(`Consultando Maritaca usando modelo ${modelName}` +
-                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-          
+            (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
+
           const response = await maritaca.chat.completions.create({
             model: modelName,
             messages: [
@@ -669,59 +668,59 @@ INSTRUÇÕES IMPORTANTES:
             temperature: 0.3,
             max_tokens: 1000
           });
-          
+
           const responseText = response.choices[0].message.content;
-          
+
           // Processar a resposta para extrair apenas a alternativa
           const alternativeMatch = responseText.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
           if (alternativeMatch) {
             return `A alternativa correta é (${alternativeMatch[2]})`;
           }
-          
+
           // Se não encontrou o padrão específico, tenta outro formato
           const letterMatch = responseText.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/);
           if (letterMatch) {
             return `A alternativa correta é (${letterMatch[1]})`;
           }
-          
+
           // Retornar o texto original se não encontrou nenhum padrão conhecido
           return responseText;
-          
+
         } catch (retryError) {
           console.error(`Erro ao usar modelo ${modelName}:`, retryError.message);
-          
+
           // Verificar se é erro de modelo não encontrado
-          const isModelNotFound = 
+          const isModelNotFound =
             retryError.message?.includes('model not found') ||
             retryError.message?.includes('does not exist');
-          
+
           // Se for erro de modelo, passamos para o próximo modelo
           if (isModelNotFound) {
             console.log(`Modelo ${modelName} não encontrado, tentando próximo modelo...`);
             break; // Sai do loop while para tentar o próximo modelo
           }
-          
+
           // Verificar se é o último retry
           if (retryCount >= MAX_RETRIES) {
             console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
             break;
           }
-          
+
           // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Aguardando ${retryDelay/1000} segundos para retry...`);
+          console.log(`Aguardando ${retryDelay / 1000} segundos para retry...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
-          
+
           // Aumentar o contador e o atraso para o próximo retry
           retryCount++;
           retryDelay *= 2; // Backoff exponencial
         }
       }
     }
-    
+
     // Se chegou aqui, é porque todos os modelos falharam
     console.error('Todos os modelos Maritaca falharam');
     return null;
-    
+
   } catch (error) {
     console.error('Erro ao consultar Maritaca:', error);
     return null;
@@ -729,214 +728,214 @@ INSTRUÇÕES IMPORTANTES:
 }
 
 function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse) {
-    // Se alguma resposta estiver faltando, retorna as disponíveis
-    const responses = [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse].filter(r => r && r.trim() !== '');
-    
-    if (responses.length === 0) {
-      console.log('Nenhuma resposta válida obtida de nenhum modelo');
-      return null;
-    }
-    
-    if (responses.length === 1) {
-      console.log('Apenas uma resposta válida disponível:', responses[0].substring(0, 50) + '...');
-      return responses[0];
-    }
-    
-    // Extrair apenas as letras das alternativas para comparação
-    const extractAlternative = (text) => {
-      if (!text) return null;
-      
-      // Padrão para capturar alternativa no formato "A alternativa correta é (X)"
-      const match1 = text.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
-      if (match1) return match1[2].toUpperCase();
-      
-      // Padrão para capturar apenas a letra
-      const match2 = text.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/);
-      if (match2) return match2[1].toUpperCase();
-      
-      // Padrão para encontrar uma letra entre parênteses
-      const match3 = text.match(/\(([A-E])\)/);
-      if (match3) return match3[1].toUpperCase();
-      
-      return null;
-    };
-    
-    // Definir pesos para cada modelo (usados no desempate)
-    const MODEL_WEIGHTS = {
-      'claude': 5,
-      'gemini': 6,
-      'gpt': 4,
-      'deepseek': 3,
-      'maritaca': 3
-    };
-    
-    // Extrair as alternativas com seu modelo de origem
-    const allResponsesWithAlternatives = [
-      { model: 'claude', response: claudeResponse, alternative: claudeResponse ? extractAlternative(claudeResponse) : null, weight: MODEL_WEIGHTS['claude'] },
-      { model: 'gpt', response: gptResponse, alternative: gptResponse ? extractAlternative(gptResponse) : null, weight: MODEL_WEIGHTS['gpt'] },
-      { model: 'gemini', response: geminiResponse, alternative: geminiResponse ? extractAlternative(geminiResponse) : null, weight: MODEL_WEIGHTS['gemini'] },
-      { model: 'deepseek', response: deepseekResponse, alternative: deepseekResponse ? extractAlternative(deepseekResponse) : null, weight: MODEL_WEIGHTS['deepseek'] },
-      { model: 'maritaca', response: maritacaResponse, alternative: maritacaResponse ? extractAlternative(maritacaResponse) : null, weight: MODEL_WEIGHTS['maritaca'] }
-    ].filter(item => item.alternative !== null);
-    
-    const alternatives = allResponsesWithAlternatives.map(item => item.alternative);
-    
-    console.log('Alternativas extraídas:', alternatives.join(', '));
-    
-    // Contar ocorrências
-    const counts = {};
-    const modelsByAlternative = {};
-    const weightSumByAlternative = {};
-    
-    allResponsesWithAlternatives.forEach(item => {
-      const alt = item.alternative;
-      counts[alt] = (counts[alt] || 0) + 1;
-      
-      // Registrar quais modelos escolheram esta alternativa
-      if (!modelsByAlternative[alt]) {
-        modelsByAlternative[alt] = [];
-        weightSumByAlternative[alt] = 0;
-      }
-      modelsByAlternative[alt].push(item.model);
-      weightSumByAlternative[alt] += item.weight;
-    });
-    
-    // Primeiro: verificar se há alternativa com 3+ votos
-    let maxCount = 0;
-    let alternatives3PlusVotes = [];
-    
-    for (const alt in counts) {
-      if (counts[alt] > maxCount) {
-        maxCount = counts[alt];
-      }
-      
-      if (counts[alt] >= 3) {
-        alternatives3PlusVotes.push(alt);
-      }
-    }
-    
-    if (alternatives3PlusVotes.length === 1) {
-      const winner = alternatives3PlusVotes[0];
-      console.log(`Consenso forte: alternativa ${winner} com ${counts[winner]} votos de ${modelsByAlternative[winner].join(', ')}`);
-      return `A alternativa correta é (${winner})`;
-    }
-    
-    // Se tiver mais de uma alternativa com 3+ votos (raro, mas possível)
-    if (alternatives3PlusVotes.length > 1) {
-      // Desempatar por peso dos modelos
-      let bestAlternative = null;
-      let highestWeight = 0;
-      
-      alternatives3PlusVotes.forEach(alt => {
-        if (weightSumByAlternative[alt] > highestWeight) {
-          highestWeight = weightSumByAlternative[alt];
-          bestAlternative = alt;
-        }
-      });
-      
-      console.log(`Múltiplas alternativas com 3+ votos. Desempate por peso: ${bestAlternative} (peso ${highestWeight})`);
-      return `A alternativa correta é (${bestAlternative})`;
-    }
-    
-    // Segundo: verificar alternativas com 2 votos
-    const alternativesWith2Votes = [];
-    for (const alt in counts) {
-      if (counts[alt] === 2) {
-        alternativesWith2Votes.push(alt);
-      }
-    }
-    
-    // Se houver apenas uma alternativa com 2 votos, verificar se inclui algum dos modelos principais
-    if (alternativesWith2Votes.length === 1) {
-      const alt = alternativesWith2Votes[0];
-      const models = modelsByAlternative[alt];
-      const hasBigThreeModel = models.some(model => ['claude', 'gemini', 'gpt'].includes(model));
-      
-      if (hasBigThreeModel) {
-        console.log(`Consenso parcial: alternativa ${alt} com 2 votos de ${models.join(', ')}, incluindo modelo principal`);
-        return `A alternativa correta é (${alt})`;
-      }
-    }
-    
-    // Se houver múltiplas alternativas com 2 votos, priorizar aquela com modelos mais confiáveis
-    if (alternativesWith2Votes.length > 1) {
-      // Verificar se alguma das alternativas com 2 votos tem Claude E Gemini concordando
-      const claudeGeminiConsensus = alternativesWith2Votes.find(alt => {
-        const models = modelsByAlternative[alt];
-        return models.includes('claude') && models.includes('gemini');
-      });
-      
-      if (claudeGeminiConsensus) {
-        console.log(`Forte consenso parcial: Claude e Gemini concordam na alternativa ${claudeGeminiConsensus}`);
-        return `A alternativa correta é (${claudeGeminiConsensus})`;
-      }
-      
-      // Verificar se alguma das alternativas com 2 votos tem Claude E GPT concordando
-      const claudeGptConsensus = alternativesWith2Votes.find(alt => {
-        const models = modelsByAlternative[alt];
-        return models.includes('claude') && models.includes('gpt');
-      });
-      
-      if (claudeGptConsensus) {
-        console.log(`Forte consenso parcial: Claude e GPT concordam na alternativa ${claudeGptConsensus}`);
-        return `A alternativa correta é (${claudeGptConsensus})`;
-      }
-      
-      // Verificar se alguma das alternativas com 2 votos tem Gemini E GPT concordando
-      const geminiGptConsensus = alternativesWith2Votes.find(alt => {
-        const models = modelsByAlternative[alt];
-        return models.includes('gemini') && models.includes('gpt');
-      });
-      
-      if (geminiGptConsensus) {
-        console.log(`Forte consenso parcial: Gemini e GPT concordam na alternativa ${geminiGptConsensus}`);
-        return `A alternativa correta é (${geminiGptConsensus})`;
-      }
-      
-      // Se chegou aqui, escolher a alternativa com 2 votos que tem maior peso total
-      let bestAlternative = null;
-      let highestWeight = 0;
-      
-      alternativesWith2Votes.forEach(alt => {
-        if (weightSumByAlternative[alt] > highestWeight) {
-          highestWeight = weightSumByAlternative[alt];
-          bestAlternative = alt;
-        }
-      });
-      
-      console.log(`Múltiplas alternativas com 2 votos. Desempate por peso: ${bestAlternative} (peso ${highestWeight})`);
-      return `A alternativa correta é (${bestAlternative})`;
-    }
-    
-    // Terceiro: Se chegou aqui, priorizar a resposta do modelo mais confiável
-    // Prioridade: Claude > Gemini > GPT > DeepSeek > Maritaca
-    const modelPriority = ['claude', 'gemini', 'gpt', 'deepseek', 'maritaca'];
-    
-    for (const model of modelPriority) {
-      const modelResponse = allResponsesWithAlternatives.find(item => item.model === model);
-      if (modelResponse) {
-        console.log(`Sem consenso claro. Usando resposta do modelo prioritário: ${model} -> ${modelResponse.alternative}`);
-        return `A alternativa correta é (${modelResponse.alternative})`;
-      }
-    }
-    
-    // Se chegou aqui, usar a primeira resposta disponível
-    console.log('Sem nenhum consenso ou modelo prioritário disponível. Usando primeira resposta.');
-    return allResponsesWithAlternatives[0].response;
+  // Se alguma resposta estiver faltando, retorna as disponíveis
+  const responses = [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse].filter(r => r && r.trim() !== '');
+
+  if (responses.length === 0) {
+    console.log('Nenhuma resposta válida obtida de nenhum modelo');
+    return null;
   }
+
+  if (responses.length === 1) {
+    console.log('Apenas uma resposta válida disponível:', responses[0].substring(0, 50) + '...');
+    return responses[0];
+  }
+
+  // Extrair apenas as letras das alternativas para comparação
+  const extractAlternative = (text) => {
+    if (!text) return null;
+
+    // Padrão para capturar alternativa no formato "A alternativa correta é (X)"
+    const match1 = text.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
+    if (match1) return match1[2].toUpperCase();
+
+    // Padrão para capturar apenas a letra
+    const match2 = text.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/);
+    if (match2) return match2[1].toUpperCase();
+
+    // Padrão para encontrar uma letra entre parênteses
+    const match3 = text.match(/\(([A-E])\)/);
+    if (match3) return match3[1].toUpperCase();
+
+    return null;
+  };
+
+  // Definir pesos para cada modelo (usados no desempate)
+  const MODEL_WEIGHTS = {
+    'claude': 5,
+    'gemini': 6,
+    'gpt': 4,
+    'deepseek': 3,
+    'maritaca': 3
+  };
+
+  // Extrair as alternativas com seu modelo de origem
+  const allResponsesWithAlternatives = [
+    { model: 'claude', response: claudeResponse, alternative: claudeResponse ? extractAlternative(claudeResponse) : null, weight: MODEL_WEIGHTS['claude'] },
+    { model: 'gpt', response: gptResponse, alternative: gptResponse ? extractAlternative(gptResponse) : null, weight: MODEL_WEIGHTS['gpt'] },
+    { model: 'gemini', response: geminiResponse, alternative: geminiResponse ? extractAlternative(geminiResponse) : null, weight: MODEL_WEIGHTS['gemini'] },
+    { model: 'deepseek', response: deepseekResponse, alternative: deepseekResponse ? extractAlternative(deepseekResponse) : null, weight: MODEL_WEIGHTS['deepseek'] },
+    { model: 'maritaca', response: maritacaResponse, alternative: maritacaResponse ? extractAlternative(maritacaResponse) : null, weight: MODEL_WEIGHTS['maritaca'] }
+  ].filter(item => item.alternative !== null);
+
+  const alternatives = allResponsesWithAlternatives.map(item => item.alternative);
+
+  console.log('Alternativas extraídas:', alternatives.join(', '));
+
+  // Contar ocorrências
+  const counts = {};
+  const modelsByAlternative = {};
+  const weightSumByAlternative = {};
+
+  allResponsesWithAlternatives.forEach(item => {
+    const alt = item.alternative;
+    counts[alt] = (counts[alt] || 0) + 1;
+
+    // Registrar quais modelos escolheram esta alternativa
+    if (!modelsByAlternative[alt]) {
+      modelsByAlternative[alt] = [];
+      weightSumByAlternative[alt] = 0;
+    }
+    modelsByAlternative[alt].push(item.model);
+    weightSumByAlternative[alt] += item.weight;
+  });
+
+  // Primeiro: verificar se há alternativa com 3+ votos
+  let maxCount = 0;
+  let alternatives3PlusVotes = [];
+
+  for (const alt in counts) {
+    if (counts[alt] > maxCount) {
+      maxCount = counts[alt];
+    }
+
+    if (counts[alt] >= 3) {
+      alternatives3PlusVotes.push(alt);
+    }
+  }
+
+  if (alternatives3PlusVotes.length === 1) {
+    const winner = alternatives3PlusVotes[0];
+    console.log(`Consenso forte: alternativa ${winner} com ${counts[winner]} votos de ${modelsByAlternative[winner].join(', ')}`);
+    return `A alternativa correta é (${winner})`;
+  }
+
+  // Se tiver mais de uma alternativa com 3+ votos (raro, mas possível)
+  if (alternatives3PlusVotes.length > 1) {
+    // Desempatar por peso dos modelos
+    let bestAlternative = null;
+    let highestWeight = 0;
+
+    alternatives3PlusVotes.forEach(alt => {
+      if (weightSumByAlternative[alt] > highestWeight) {
+        highestWeight = weightSumByAlternative[alt];
+        bestAlternative = alt;
+      }
+    });
+
+    console.log(`Múltiplas alternativas com 3+ votos. Desempate por peso: ${bestAlternative} (peso ${highestWeight})`);
+    return `A alternativa correta é (${bestAlternative})`;
+  }
+
+  // Segundo: verificar alternativas com 2 votos
+  const alternativesWith2Votes = [];
+  for (const alt in counts) {
+    if (counts[alt] === 2) {
+      alternativesWith2Votes.push(alt);
+    }
+  }
+
+  // Se houver apenas uma alternativa com 2 votos, verificar se inclui algum dos modelos principais
+  if (alternativesWith2Votes.length === 1) {
+    const alt = alternativesWith2Votes[0];
+    const models = modelsByAlternative[alt];
+    const hasBigThreeModel = models.some(model => ['claude', 'gemini', 'gpt'].includes(model));
+
+    if (hasBigThreeModel) {
+      console.log(`Consenso parcial: alternativa ${alt} com 2 votos de ${models.join(', ')}, incluindo modelo principal`);
+      return `A alternativa correta é (${alt})`;
+    }
+  }
+
+  // Se houver múltiplas alternativas com 2 votos, priorizar aquela com modelos mais confiáveis
+  if (alternativesWith2Votes.length > 1) {
+    // Verificar se alguma das alternativas com 2 votos tem Claude E Gemini concordando
+    const claudeGeminiConsensus = alternativesWith2Votes.find(alt => {
+      const models = modelsByAlternative[alt];
+      return models.includes('claude') && models.includes('gemini');
+    });
+
+    if (claudeGeminiConsensus) {
+      console.log(`Forte consenso parcial: Claude e Gemini concordam na alternativa ${claudeGeminiConsensus}`);
+      return `A alternativa correta é (${claudeGeminiConsensus})`;
+    }
+
+    // Verificar se alguma das alternativas com 2 votos tem Claude E GPT concordando
+    const claudeGptConsensus = alternativesWith2Votes.find(alt => {
+      const models = modelsByAlternative[alt];
+      return models.includes('claude') && models.includes('gpt');
+    });
+
+    if (claudeGptConsensus) {
+      console.log(`Forte consenso parcial: Claude e GPT concordam na alternativa ${claudeGptConsensus}`);
+      return `A alternativa correta é (${claudeGptConsensus})`;
+    }
+
+    // Verificar se alguma das alternativas com 2 votos tem Gemini E GPT concordando
+    const geminiGptConsensus = alternativesWith2Votes.find(alt => {
+      const models = modelsByAlternative[alt];
+      return models.includes('gemini') && models.includes('gpt');
+    });
+
+    if (geminiGptConsensus) {
+      console.log(`Forte consenso parcial: Gemini e GPT concordam na alternativa ${geminiGptConsensus}`);
+      return `A alternativa correta é (${geminiGptConsensus})`;
+    }
+
+    // Se chegou aqui, escolher a alternativa com 2 votos que tem maior peso total
+    let bestAlternative = null;
+    let highestWeight = 0;
+
+    alternativesWith2Votes.forEach(alt => {
+      if (weightSumByAlternative[alt] > highestWeight) {
+        highestWeight = weightSumByAlternative[alt];
+        bestAlternative = alt;
+      }
+    });
+
+    console.log(`Múltiplas alternativas com 2 votos. Desempate por peso: ${bestAlternative} (peso ${highestWeight})`);
+    return `A alternativa correta é (${bestAlternative})`;
+  }
+
+  // Terceiro: Se chegou aqui, priorizar a resposta do modelo mais confiável
+  // Prioridade: Claude > Gemini > GPT > DeepSeek > Maritaca
+  const modelPriority = ['claude', 'gemini', 'gpt', 'deepseek', 'maritaca'];
+
+  for (const model of modelPriority) {
+    const modelResponse = allResponsesWithAlternatives.find(item => item.model === model);
+    if (modelResponse) {
+      console.log(`Sem consenso claro. Usando resposta do modelo prioritário: ${model} -> ${modelResponse.alternative}`);
+      return `A alternativa correta é (${modelResponse.alternative})`;
+    }
+  }
+
+  // Se chegou aqui, usar a primeira resposta disponível
+  console.log('Sem nenhum consenso ou modelo prioritário disponível. Usando primeira resposta.');
+  return allResponsesWithAlternatives[0].response;
+}
 
 
 // Função auxiliar para calcular similaridade entre strings
 function calculateSimilarity(str1, str2) {
   const words1 = str1.toLowerCase().split(/\s+/);
   const words2 = str2.toLowerCase().split(/\s+/);
-  
+
   const set1 = new Set(words1);
   const set2 = new Set(words2);
-  
+
   const intersection = new Set([...set1].filter(x => set2.has(x)));
   const union = new Set([...set1, ...set2]);
-  
+
   return intersection.size / union.size;
 }
 
@@ -948,15 +947,15 @@ async function saveResponseToFile(text) {
     if (!fs.existsSync(responsesDir)) {
       fs.mkdirSync(responsesDir, { recursive: true });
     }
-    
+
     // Gerar um nome de arquivo baseado no timestamp
     const filename = `response-${Date.now()}.txt`;
     const filePath = path.join(responsesDir, filename);
-    
+
     // Escrever o texto no arquivo
     fs.writeFileSync(filePath, text);
     console.log(`Resposta salva em: ${filePath}`);
-    
+
     // Retornar o caminho relativo do arquivo
     return `responses/${filename}`;
   } catch (error) {
@@ -965,80 +964,192 @@ async function saveResponseToFile(text) {
   }
 }
 
+
+
+/**
+ * @swagger
+ * /api/analyze:
+ *   post:
+ *     summary: Analisa uma imagem de questão
+ *     description: |
+ *       Recebe uma imagem contendo uma questão de múltipla escolha, extrai o texto usando OCR,
+ *       e consulta múltiplos modelos de IA para determinar a alternativa correta.
+ *       
+ *       O sistema consulta os seguintes modelos (quando disponíveis):
+ *       - Claude (Anthropic)
+ *       - GPT (OpenAI)
+ *       - Gemini (Google)
+ *       - DeepSeek
+ *       - Maritaca (Sabiá)
+ *       
+ *       A API retorna a resposta consensual entre os modelos, além das respostas individuais.
+ *     tags: [Análise]
+ *     consumes:
+ *       - multipart/form-data
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *                 description: Imagem da questão a ser analisada (PNG, JPG, JPEG)
+ *     responses:
+ *       200:
+ *         description: Análise realizada com sucesso
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/AnalyzeResponse'
+ *       400:
+ *         description: Requisição inválida
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             examples:
+ *               imageNotProvided:
+ *                 value:
+ *                   error: "Imagem não fornecida"
+ *               invalidImage:
+ *                 value:
+ *                   error: "Formato de imagem inválido"
+ *                   details: { accepted: ["image/png", "image/jpeg", "image/jpg"] }
+ *       413:
+ *         description: Imagem muito grande
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             example:
+ *               error: "Tamanho da imagem excede o limite máximo"
+ *               details: { maxSize: "5MB" }
+ *       500:
+ *         description: Erro no servidor
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             examples:
+ *               generalError:
+ *                 value:
+ *                   error: "Erro interno no servidor"
+ *               ocrError:
+ *                 value:
+ *                   error: "Falha ao processar a imagem"
+ *                   code: "OCR_PROCESSING_ERROR"
+ *               aiError:
+ *                 value:
+ *                   error: "Falha ao consultar modelos de IA"
+ *                   code: "AI_PROCESSING_ERROR"
+ */
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
-    try {
-      // Extract and analyze image
-      const questionData = await extractTextFromImage(req.file.path);
-      
-      // Formato completo da questão para enviar aos modelos
-      const fullQuestionText = `
+  try {
+    // Extract and analyze image
+    const questionData = await extractTextFromImage(req.file.path);
+
+    // Formato completo da questão para enviar aos modelos
+    const fullQuestionText = `
   ${questionData.enunciado}
   
   ${questionData.alternativas.map(alt => `${alt.letra}) ${alt.texto}`).join('\n')}
   `;
-      
-      // Consultar todos os modelos de IA em paralelo
-      const [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse] = await Promise.all([
-        askClaude(fullQuestionText),
-        askGPT(fullQuestionText),
-        askGemini(fullQuestionText),
-        askDeepSeek(fullQuestionText),
-        askMaritaca(fullQuestionText)
-      ]);
-      
-      // Encontrar resposta consensual
-      const commonResponse = findCommonResponse(
-        claudeResponse, 
-        gptResponse, 
-        geminiResponse, 
-        deepseekResponse, 
-        maritacaResponse
-      );
-      
-      // Salvar resposta em arquivo
-      let responseUrl = null;
-      if (commonResponse) {
-        responseUrl = await saveResponseToFile(commonResponse);
-      }
-      
-      // Construct response with full question details
-      res.json({
-        success: true,
-        questionNumber: questionData.numero_questao,
-        fullQuestion: questionData.enunciado,
-        alternatives: questionData.alternativas,
-        isExcetoQuestion: questionData.tipo_exceto,
-        // Adicionar as respostas ao objeto JSON
-        commonResponse: commonResponse,
-        responseUrl: responseUrl,
-        responses: {
-          claude: claudeResponse,
-          gpt: gptResponse,
-          gemini: geminiResponse,
-          deepseek: deepseekResponse,
-          maritaca: maritacaResponse
-        }
-      });
-    
-    } catch (error) {
-      console.error('Erro completo:', error);
-      res.status(500).json({ 
-        error: error.message || 'Erro interno no servidor'
-      });
-    }
-  });
 
-// Rota básica para verificar se a API está funcionando
+    // Consultar todos os modelos de IA em paralelo
+    const [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse] = await Promise.all([
+      askClaude(fullQuestionText),
+      askGPT(fullQuestionText),
+      askGemini(fullQuestionText),
+      askDeepSeek(fullQuestionText),
+      askMaritaca(fullQuestionText)
+    ]);
+
+    // Encontrar resposta consensual
+    const commonResponse = findCommonResponse(
+      claudeResponse,
+      gptResponse,
+      geminiResponse,
+      deepseekResponse,
+      maritacaResponse
+    );
+
+    // Salvar resposta em arquivo
+    let responseUrl = null;
+    if (commonResponse) {
+      responseUrl = await saveResponseToFile(commonResponse);
+    }
+
+    // Construct response with full question details
+    res.json({
+      success: true,
+      questionNumber: questionData.numero_questao,
+      fullQuestion: questionData.enunciado,
+      alternatives: questionData.alternativas,
+      isExcetoQuestion: questionData.tipo_exceto,
+      // Adicionar as respostas ao objeto JSON
+      commonResponse: commonResponse,
+      responseUrl: responseUrl,
+      responses: {
+        claude: claudeResponse,
+        gpt: gptResponse,
+        gemini: geminiResponse,
+        deepseek: deepseekResponse,
+        maritaca: maritacaResponse
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro completo:', error);
+    res.status(500).json({
+      error: error.message || 'Erro interno no servidor'
+    });
+  }
+});
+
+
+
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: Verifica status da API
+ *     description: Retorna um status simples para confirmar que a API está online e informações básicas
+ *     tags: [Status]
+ *     responses:
+ *       200:
+ *         description: API está funcionando
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/StatusResponse'
+ */
 app.get('/', (req, res) => {
+  const startTime = process.uptime();
+  const packageJson = require('./package.json');
+  
   res.json({
     status: 'online',
-    message: 'API de análise de imagens com IA está funcionando'
+    message: 'API de análise de imagens com IA está funcionando',
+    version: packageJson.version,
+    uptime: Math.floor(startTime)
   });
 });
+
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  explorer: true,
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: "API de Análise de Questões - Documentação",
+  customfavIcon: ""
+}));
 
 // Iniciar o servidor
 app.listen(port, () => {
   console.log(`Servidor rodando na porta ${port}`);
+  console.log(`Documentação Swagger disponível em http://localhost:${port}/api-docs`);
 });
 
 module.exports = app;
