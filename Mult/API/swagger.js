@@ -72,8 +72,8 @@ A API requer as seguintes chaves de API configuradas via variáveis de ambiente:
         description: 'Servidor de Desenvolvimento Local'
       },
       {
-        url: 'https://api-questoes.exemplo.com',
-        description: 'Servidor de Produção (exemplo)'
+        url: 'https://goc-mult.r74hlz.easypanel.host',
+        description: 'Servidor de Produção'
       }
     ],
     tags: tags,
