@@ -963,7 +963,7 @@ async function saveResponseToFile(text) {
     throw new Error('Falha ao salvar resposta');
   }
 }
-
+ 
 
 
 /**
@@ -997,54 +997,6 @@ async function saveResponseToFile(text) {
  *                 type: string
  *                 format: binary
  *                 description: Imagem da questão a ser analisada (PNG, JPG, JPEG)
- *     responses:
- *       200:
- *         description: Análise realizada com sucesso
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/AnalyzeResponse'
- *       400:
- *         description: Requisição inválida
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             examples:
- *               imageNotProvided:
- *                 value:
- *                   error: "Imagem não fornecida"
- *               invalidImage:
- *                 value:
- *                   error: "Formato de imagem inválido"
- *                   details: { accepted: ["image/png", "image/jpeg", "image/jpg"] }
- *       413:
- *         description: Imagem muito grande
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               error: "Tamanho da imagem excede o limite máximo"
- *               details: { maxSize: "5MB" }
- *       500:
- *         description: Erro no servidor
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             examples:
- *               generalError:
- *                 value:
- *                   error: "Erro interno no servidor"
- *               ocrError:
- *                 value:
- *                   error: "Falha ao processar a imagem"
- *                   code: "OCR_PROCESSING_ERROR"
- *               aiError:
- *                 value:
- *                   error: "Falha ao consultar modelos de IA"
- *                   code: "AI_PROCESSING_ERROR"
  */
 app.post('/api/analyze', upload.single('image'), async (req, res) => {
   try {
