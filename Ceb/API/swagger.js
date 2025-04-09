@@ -35,7 +35,7 @@ const swaggerOptions = {
         description: 'Servidor de Desenvolvimento Local'
       },
       {
-        url: 'https://goc-mult.r74hlz.easypanel.host',
+        url: 'https://goc-ceb.r74hlz.easypanel.host',
         description: 'Servidor de Produção'
       }
     ],
