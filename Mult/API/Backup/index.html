@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API de Análise de Imagens com IA</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .result-container {
+            margin-top: 20px;
+            display: none;
+        }
+        .result-box {
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .loading {
+            text-align: center;
+            margin: 20px 0;
+            display: none;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .audio-player {
+            width: 100%;
+            margin-top: 15px;
+        }
+        .section-title {
+            margin-top: 10px;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        #preview-container {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        #image-preview {
+            max-width: 100%;
+            max-height: 300px;
+            display: none;
+            margin: 0 auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>API de Análise de Imagens com IA</h1>
+    <div class="container">
+        <div class="form-group">
+            <label for="image-upload">Selecione uma imagem com texto:</label>
+            <input type="file" id="image-upload" accept="image/*">
+        </div>
+        
+        <div id="preview-container">
+            <img id="image-preview" alt="Preview da imagem">
+        </div>
+        
+        <button id="analyze-btn">Analisar Imagem</button>
+        
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Processando imagem e consultando modelos de IA...</p>
+        </div>
+        
+        <div class="result-container" id="result-container">
+            <div class="result-box">
+                <div class="section-title">Texto Extraído:</div>
+                <div id="extracted-text"></div>
+            </div>
+            
+            <div class="result-box">
+                <div class="section-title">Pergunta Identificada:</div>
+                <div id="question"></div>
+            </div>
+            
+            <div class="result-box">
+                <div class="section-title">Resposta Consensual:</div>
+                <div id="common-response"></div>
+                
+                <div class="section-title">Resposta em Texto:</div>
+                <div id="response-container">
+                    <p>Resposta: <a id="response-download-link" href="#" target="_blank">Baixar arquivo de texto</a></p>
+                </div>
+            </div>
+            
+            <div class="result-box">
+                <div class="section-title">Detalhes das Respostas:</div>
+                <details>
+                    <summary>Ver respostas individuais</summary>
+                    <div class="section-title">Claude:</div>
+                    <div id="claude-response"></div>
+                    
+                    <div class="section-title">GPT:</div>
+                    <div id="gpt-response"></div>
+                    
+                    <div class="section-title">Gemini:</div>
+                    <div id="gemini-response"></div>
+                </details>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const imageUpload = document.getElementById('image-upload');
+            const imagePreview = document.getElementById('image-preview');
+            const analyzeBtn = document.getElementById('analyze-btn');
+            const loading = document.getElementById('loading');
+            const resultContainer = document.getElementById('result-container');
+            const extractedText = document.getElementById('extracted-text');
+            const questionElement = document.getElementById('question');
+            const commonResponse = document.getElementById('common-response');
+            const claudeResponse = document.getElementById('claude-response');
+            const gptResponse = document.getElementById('gpt-response');
+            const geminiResponse = document.getElementById('gemini-response');
+            const audioPlayer = document.getElementById('audio-player');
+            
+            // Preview da imagem selecionada
+            imageUpload.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(event) {
+                        imagePreview.src = event.target.result;
+                        imagePreview.style.display = 'block';
+                    };
+                    reader.readAsDataURL(file);
+                }
+            });
+            
+            // Evento para analisar a imagem
+            analyzeBtn.addEventListener('click', async function() {
+                const file = imageUpload.files[0];
+                if (!file) {
+                    alert('Por favor, selecione uma imagem primeiro.');
+                    return;
+                }
+                
+                // Mostrar loading e esconder resultados
+                loading.style.display = 'block';
+                resultContainer.style.display = 'none';
+                
+                // Criar FormData para enviar a imagem
+                const formData = new FormData();
+                formData.append('image', file);
+                
+                try {
+                    // Enviar requisição para a API
+                    const response = await fetch('http://localhost:3000/api/analyze', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Erro na requisição: ' + response.statusText);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Preencher os resultados
+                    extractedText.textContent = data.extractedText;
+                    questionElement.textContent = data.question;
+                    commonResponse.textContent = data.commonResponse;
+                    claudeResponse.textContent = data.responses.claude || 'Sem resposta';
+                    gptResponse.textContent = data.responses.gpt || 'Sem resposta';
+                    geminiResponse.textContent = data.responses.gemini || 'Sem resposta';
+                    
+                    // Configurar o link de download da resposta
+                    const responseDownloadLink = document.getElementById('response-download-link');
+                    
+                    if (data.responseUrl) {
+                        responseDownloadLink.href = data.responseUrl;
+                        responseDownloadLink.textContent = "Baixar arquivo de texto";
+                    } else {
+                        responseDownloadLink.href = "#";
+                        responseDownloadLink.textContent = "Resposta não disponível como arquivo";
+                    }
+                    
+                    // Mostrar resultados e esconder loading
+                    resultContainer.style.display = 'block';
+                } catch (error) {
+                    alert('Erro ao processar a imagem: ' + error.message);
+                    console.error('Erro:', error);
+                } finally {
+                    loading.style.display = 'none';
+                }
+            });
+        });
+    </script>
+</body>
+</html>

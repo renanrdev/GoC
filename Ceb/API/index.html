@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analisador de Questões - Verdadeiro ou Falso</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #3498db;
+            --secondary-color: #2ecc71;
+            --warning-color: #e74c3c;
+            --background-light: #f4f6f7;
+            --text-dark: #2c3e50;
+            --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--background-light);
+            color: var(--text-dark);
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: white;
+            box-shadow: var(--card-shadow);
+            border-radius: 12px;
+            margin-top: 30px;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            text-align: center;
+            color: var(--primary-color);
+            margin-bottom: 30px;
+            font-weight: 600;
+            position: relative;
+            padding-bottom: 10px;
+        }
+
+        h1::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 3px;
+            background-color: var(--secondary-color);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--text-dark);
+            font-weight: 600;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px dashed var(--primary-color);
+            border-radius: 8px;
+            background-color: var(--background-light);
+            transition: all 0.3s ease;
+        }
+
+        input[type="file"]:hover {
+            border-color: var(--secondary-color);
+        }
+
+        #image-preview {
+            max-width: 100%;
+            max-height: 400px;
+            border-radius: 12px;
+            margin-top: 20px;
+            box-shadow: var(--card-shadow);
+            display: none;
+        }
+
+        #analyze-btn {
+            width: 100%;
+            padding: 12px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background-color 0.3s ease;
+        }
+
+        #analyze-btn:hover {
+            background-color: var(--secondary-color);
+        }
+
+        .result-box {
+            background-color: var(--background-light);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: var(--card-shadow);
+        }
+
+        .section-title {
+            font-weight: 600;
+            color: var(--primary-color);
+            margin-bottom: 10px;
+            border-bottom: 2px solid var(--secondary-color);
+            padding-bottom: 5px;
+        }
+
+        .item-list .item {
+            background-color: white;
+            border-left: 4px solid var(--primary-color);
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .item-list .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .item-list .item-number {
+            font-weight: 600;
+        }
+
+        .item-list .item-result {
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        .item-list .item-result.true {
+            background-color: rgba(46, 204, 113, 0.2);
+            color: #27ae60;
+        }
+
+        .item-list .item-result.false {
+            background-color: rgba(231, 76, 60, 0.2);
+            color: #c0392b;
+        }
+
+        .item-list .item-text {
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        .item-list .item-justification {
+            font-size: 0.9em;
+            color: #7f8c8d;
+            font-style: italic;
+            padding-top: 8px;
+            border-top: 1px solid #ecf0f1;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top: 4px solid var(--primary-color);
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        details {
+            background-color: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: var(--card-shadow);
+            margin-top: 15px;
+        }
+
+        summary {
+            cursor: pointer;
+            color: var(--primary-color);
+            font-weight: 600;
+            outline: none;
+            padding: 5px 0;
+        }
+
+        #response-container a {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.3s ease;
+            display: inline-block;
+            margin-top: 10px;
+        }
+
+        #response-container a:hover {
+            color: var(--secondary-color);
+            text-decoration: underline;
+        }
+
+        .text-principal {
+            background-color: white;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            line-height: 1.6;
+            font-size: 0.95em;
+            max-height: 300px;
+            overflow-y: auto;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        /* Responsive adjustments */
+        @media (max-width: 600px) {
+            .container {
+                margin: 10px;
+                padding: 15px;
+            }
+
+            h1 {
+                font-size: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Analisador de Questões - Verdadeiro ou Falso</h1>
+        
+        <div class="form-group">
+            <label for="image-upload">Selecione uma imagem com as questões:</label>
+            <input type="file" id="image-upload" accept="image/*">
+        </div>
+        
+        <div id="preview-container">
+            <img id="image-preview" alt="Preview da imagem">
+        </div>
+        
+        <button id="analyze-btn">Analisar Imagem</button>
+        
+        <div class="loading" id="loading" style="display:none;">
+            <div class="spinner"></div>
+            <p>Processando imagem e analisando questões...</p>
+        </div>
+        
+        <div class="result-container" id="result-container" style="display:none;">
+            <div class="result-box">
+                <div class="section-title">Texto Principal</div>
+                <div id="texto-principal" class="text-principal"></div>
+            </div>
+            
+            <div class="result-box">
+                <div class="section-title">Análise dos Itens</div>
+                <div id="itens-container" class="item-list"></div>
+            </div>
+            
+            <div class="result-box">
+                <div class="section-title">Download da Análise</div>
+                <div id="response-container">
+                    <a id="response-download-link" href="#" target="_blank">Baixar análise completa</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const imageUpload = document.getElementById('image-upload');
+            const imagePreview = document.getElementById('image-preview');
+            const analyzeBtn = document.getElementById('analyze-btn');
+            const loading = document.getElementById('loading');
+            const resultContainer = document.getElementById('result-container');
+            
+            // Elementos dos resultados
+            const textoPrincipalEl = document.getElementById('texto-principal');
+            const itensContainer = document.getElementById('itens-container');
+            
+            // Preview da imagem selecionada
+            imageUpload.addEventListener('change', function(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(event) {
+                        imagePreview.src = event.target.result;
+                        imagePreview.style.display = 'block';
+                    };
+                    reader.readAsDataURL(file);
+                }
+            });
+            
+            // Evento para analisar a imagem
+            analyzeBtn.addEventListener('click', async function() {
+                const file = imageUpload.files[0];
+                if (!file) {
+                    alert('Por favor, selecione uma imagem primeiro.');
+                    return;
+                }
+                
+                // Mostrar loading e esconder resultados
+                loading.style.display = 'block';
+                resultContainer.style.display = 'none';
+                
+                // Criar FormData para enviar a imagem
+                const formData = new FormData();
+                formData.append('image', file);
+                
+                try {
+                    // Enviar requisição para a API
+                    const response = await fetch('http://localhost:3000/api/analyze', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('Erro na requisição: ' + response.statusText);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Preencher o texto principal
+                    textoPrincipalEl.textContent = data.textoPrincipal || 'Texto não identificado';
+                    
+                    // Limpar e preencher itens
+                    itensContainer.innerHTML = '';
+                    if (data.itens && Array.isArray(data.itens)) {
+                        data.itens.forEach(item => {
+                            const isVerdadeiro = item.resposta === 'VERDADEIRO';
+                            
+                            const itemEl = document.createElement('div');
+                            itemEl.classList.add('item');
+                            
+                            const itemHeaderEl = document.createElement('div');
+                            itemHeaderEl.classList.add('item-header');
+                            
+                            const itemNumberEl = document.createElement('div');
+                            itemNumberEl.classList.add('item-number');
+                            itemNumberEl.textContent = `Item ${item.numero}`;
+                            
+                            const itemResultEl = document.createElement('div');
+                            itemResultEl.classList.add('item-result');
+                            itemResultEl.classList.add(isVerdadeiro ? 'true' : 'false');
+                            itemResultEl.textContent = item.resposta;
+                            
+                            itemHeaderEl.appendChild(itemNumberEl);
+                            itemHeaderEl.appendChild(itemResultEl);
+                            
+                            const itemTextEl = document.createElement('div');
+                            itemTextEl.classList.add('item-text');
+                            itemTextEl.textContent = item.afirmacao;
+                            
+                            const itemJustificationEl = document.createElement('div');
+                            itemJustificationEl.classList.add('item-justification');
+                            itemJustificationEl.textContent = `Justificativa: ${item.justificativa}`;
+                            
+                            itemEl.appendChild(itemHeaderEl);
+                            itemEl.appendChild(itemTextEl);
+                            itemEl.appendChild(itemJustificationEl);
+                            
+                            itensContainer.appendChild(itemEl);
+                        });
+                    }
+                    
+                    // Configurar o link de download da resposta
+                    const responseDownloadLink = document.getElementById('response-download-link');
+                    
+                    if (data.responseUrl) {
+                        responseDownloadLink.href = data.responseUrl;
+                        responseDownloadLink.textContent = "Baixar análise completa";
+                    } else {
+                        responseDownloadLink.href = "#";
+                        responseDownloadLink.textContent = "Análise não disponível como arquivo";
+                    }
+                    
+                    // Mostrar resultados e esconder loading
+                    resultContainer.style.display = 'block';
+                } catch (error) {
+                    alert('Erro ao processar a imagem: ' + error.message);
+                    console.error('Erro:', error);
+                } finally {
+                    loading.style.display = 'none';
+                }
+            });
+        });
+    </script>
+</body>
+</html>
