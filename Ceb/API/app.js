@@ -30,17 +30,21 @@ const CLAUDE_MODELS = [
   "claude-3-7-sonnet-20250219",  // Claude mais recente e avançado
   "claude-3-5-sonnet-20241022",  // Claude 3.5 Sonnet (nova versão)
   "claude-3-5-haiku-20241022",   // Claude 3.5 Haiku (mais rápido)
-  "claude-3-opus-20240229",      // Claude 3 Opus (mais potente, mas mais antigo)
-  "claude-3-5-sonnet-20240620",  // Claude 3.5 Sonnet (versão antiga)
-  "claude-3-haiku-20240307"      // Claude 3 Haiku (versão antiga)
 ];
 
 // Configuração dos modelos GPT (em ordem de preferência)
 const GPT_MODELS = [
+  "gpt-4.5-preview",
+  "gpt-4o",
   "gpt-3.5-turbo",
-  "gpt-3.5-turbo-instruct",
-  "text-davinci-003"
+
 ];
+
+const XAI_MODELS = [
+  "grok-3-beta",
+  "grok-3-fast-beta",  // Adicione ou remova modelos conforme necessário
+];
+
 
 // Configuração dos modelos Gemini (em ordem de preferência)
 const GEMINI_MODELS = [
@@ -51,14 +55,14 @@ const GEMINI_MODELS = [
 
 // Configuração dos modelos DeepSeek (em ordem de preferência)
 const DEEPSEEK_MODELS = [
-  "deepseek-chat",
-  "deepseek-coder"  // Adicione ou remova modelos conforme necessário
+  "deepseek-reasoner",
+  "deepseek-chat"  // Adicione ou remova modelos conforme necessário
 ];
 
 // Configuração dos modelos Maritaca (em ordem de preferência)
 const MARITACA_MODELS = [
-  "sabia-3",
-  "sabia-2"  // Adicione ou remova modelos conforme necessário
+  "sabia-3",  // Adicione ou remova modelos conforme necessário
+  "sabiazinho-3",
 ];
 
 //------------------------------------------------------------------------
@@ -104,6 +108,7 @@ let openai = null;
 let genAI = null;
 let deepseek = null;
 let maritaca = null;
+let xAi = null;
 
 // Inicializar os clientes apenas se as chaves estiverem disponíveis
 try {
@@ -112,18 +117,6 @@ try {
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
     console.log("Cliente Anthropic (Claude) inicializado com sucesso");
-
-    
-    // Verificar qual tipo de API está disponível
-    if (anthropic.messages && anthropic.messages.create) {
-      console.log("API do Claude usando messages.create");
-    } else if (anthropic.completions && anthropic.completions.create) {
-      console.log("API do Claude usando completions.create");
-    } else if (anthropic.create) {
-      console.log("API do Claude usando create diretamente");
-    } else {
-      console.log("AVISO: Interface da API do Claude não reconhecida");
-    }
     
   } else {
     console.log("Chave de API do Anthropic não configurada");
@@ -143,6 +136,20 @@ try {
   }
 } catch (error) {
   console.error("Erro ao inicializar cliente OpenAI:", error.message);
+}
+
+try{
+  if(process.env.XAI_API_KEY){
+    xAi = new OpenAI({
+      baseURL: 'https://api.x.ai/v1',
+      apiKey: process.env.XAI_API_KEY,
+    });
+    console.log("Cliente XAI inicializado com sucesso");
+} else{
+    console.log("Chave de API do XAI não configurada");
+  }
+} catch (error) {
+  console.error("Erro ao inicializar cliente XAI:", error.message);
 }
 
 try {
@@ -194,562 +201,322 @@ const ensureDirExists = (dirPath) => {
 ensureDirExists(path.join(__dirname, 'uploads'));
 ensureDirExists(path.join(__dirname, 'responses'));
 
-// Função para obter resposta do Claude
+const TIMEOUT_MS = 20000; // 20 segundos
+const MAX_RETRIES = 2;
+const INITIAL_RETRY_DELAY = 1000; // 1 segundo
+
+/**
+ * Adiciona um timeout a qualquer Promise
+ * @param {Promise} promise - A promise para adicionar timeout
+ * @param {number} timeoutMs - Tempo em ms para o timeout
+ * @param {string} errorMessage - Mensagem de erro para o timeout
+ * @returns {Promise} - Nova promise com timeout
+ */
+function withTimeout(promise, timeoutMs = TIMEOUT_MS, errorMessage = 'Operação excedeu o tempo limite') {
+  const timeoutPromise = new Promise((_, reject) => {
+    const id = setTimeout(() => {
+      clearTimeout(id);
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]);
+}
+
+/**
+ * Processa a resposta de texto para extrair VERDADEIRO ou FALSO
+ * @param {string} text - Texto de resposta a ser processado
+ * @returns {string|null} - "VERDADEIRO", "FALSO" ou o texto original
+ */
+function processResponse(text) {
+  if (!text) return null;
+  
+  const normalizedText = text.trim();
+  
+  // Verificar padrões em português
+  if (normalizedText.includes('VERDADEIRO')) return 'VERDADEIRO';
+  if (normalizedText.includes('FALSO')) return 'FALSO';
+  
+  // Verificar padrões em inglês
+  if (normalizedText.includes('TRUE')) return 'VERDADEIRO';
+  if (normalizedText.includes('FALSE')) return 'FALSO';
+  
+  // Verificar abreviações
+  if (normalizedText === 'V' || normalizedText.includes(' V ')) return 'VERDADEIRO';
+  if (normalizedText === 'F' || normalizedText.includes(' F ')) return 'FALSO';
+  
+  // Se não conseguiu determinar, retornar o texto original
+  return normalizedText;
+}
+
+/**
+ * Cria um prompt melhorado para avaliação de verdadeiro/falso
+ * @param {string} question - Texto da questão
+ * @param {string|number} itemNumber - Número do item
+ * @returns {string} - Prompt formatado
+ */
+function createPrompt(question, itemNumber) {
+  return `
+${question}
+
+INSTRUÇÕES IMPORTANTES:
+- Avalie se o item ${itemNumber} é VERDADEIRO ou FALSO com base no texto acima
+- Responda APENAS com "VERDADEIRO" ou "FALSO" (em maiúsculas)
+- NÃO forneça explicações ou justificativas
+- Seja direto e objetivo
+`;
+}
+
+/**
+ * Função genérica para consultar modelos de IA
+ * @param {Object} options - Opções para a consulta
+ * @returns {Promise<string|null>} - Texto de resposta ou null em caso de falha
+ */
+async function askModel(options) {
+  const { 
+    client, 
+    clientName, 
+    models, 
+    question, 
+    itemNumber,
+    makeRequest 
+  } = options;
+
+  try {
+    if (!client) {
+      console.log(`Cliente do ${clientName} não está configurado`);
+      return null;
+    }
+
+    const prompt = createPrompt(question, itemNumber);
+    
+    // Tentar cada modelo da lista
+    for (const modelName of models) {
+      let retryCount = 0;
+      let retryDelay = INITIAL_RETRY_DELAY;
+      
+      while (retryCount <= MAX_RETRIES) {
+        try {
+          console.log(`Consultando ${clientName} usando modelo ${modelName}` +
+                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
+          
+          // Fazer a requisição com timeout
+          const result = await withTimeout(
+            makeRequest(client, modelName, prompt),
+            TIMEOUT_MS,
+            `Timeout de ${TIMEOUT_MS/1000}s excedido ao consultar o modelo ${modelName}`
+          );
+          
+          return processResponse(result);
+          
+        } catch (retryError) {
+          // Verificar se é um erro de timeout
+          const isTimeout = retryError.message?.includes('Timeout de');
+          
+          if (isTimeout) {
+            console.log(`${retryError.message}. Tentando próximo modelo...`);
+            break; // Sai do loop while para tentar o próximo modelo
+          }
+          
+          // Verificar se é erro de modelo não encontrado
+          const isModelNotFound = 
+            retryError.message?.includes('model not found') || 
+            retryError.message?.includes('does not exist') ||
+            retryError.message?.includes('not supported');
+          
+          // Se for erro de modelo, passamos para o próximo modelo
+          if (isModelNotFound) {
+            console.log(`Modelo ${modelName} não encontrado ou não suportado, tentando próximo modelo...`);
+            break; // Sai do loop while para tentar o próximo modelo
+          }
+          
+          // Verificar se é o último retry
+          if (retryCount >= MAX_RETRIES) {
+            console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
+            break; // Sai do loop while para tentar o próximo modelo
+          }
+          
+          // Calcular atraso para o próximo retry (backoff exponencial)
+          console.log(`Erro ao consultar modelo. Aguardando ${retryDelay/1000} segundos para retry...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+          
+          // Aumentar o contador e o atraso para o próximo retry
+          retryCount++;
+          retryDelay *= 2; // Backoff exponencial
+        }
+      }
+    }
+    
+    // Se chegou aqui, é porque todos os modelos falharam
+    console.error(`Todos os modelos ${clientName} falharam`);
+    return null;
+  } catch (error) {
+    console.error(`Erro ao consultar ${clientName}:`, error);
+    return null;
+  }
+}
+
+// Implementação específica para o Claude (Anthropic)
 async function askClaude(question, itemNumber) {
-  try {
-    if (!anthropic) {
-      console.log('Cliente do Claude não está configurado');
-      return null;
-    }
-    
-    // Modificar o prompt para obter apenas a resposta verdadeiro/falso
-    const enhancedPrompt = `
-${question}
-
-INSTRUÇÕES IMPORTANTES:
-- Avalie se o item ${itemNumber} é VERDADEIRO ou FALSO com base no texto acima
-- Responda APENAS com "VERDADEIRO" ou "FALSO" (em maiúsculas)
-- NÃO forneça explicações ou justificativas
-- Seja direto e objetivo
-`;
-    
-    // Verificar se temos acesso à Messages API (única compatível com Claude 3.x)
-    if (typeof anthropic.messages === 'object' && typeof anthropic.messages.create === 'function') {
-      // Configuração de retry
-      const MAX_RETRIES = 2;
-      const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-      
-      // Tentar cada modelo sequencialmente
-      for (const modelName of CLAUDE_MODELS) {
-        let retryCount = 0;
-        let retryDelay = INITIAL_RETRY_DELAY;
-        
-        while (retryCount <= MAX_RETRIES) {
-          try {
-            console.log(`Consultando Claude usando modelo ${modelName}` + 
-                        (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-            
-            const response = await anthropic.messages.create({
-              model: modelName,
-              max_tokens: 50,
-              messages: [
-                { role: 'user', content: enhancedPrompt }
-              ]
-            });
-            
-            const responseText = response.content[0].text.trim();
-            
-            // Processar a resposta para extrair apenas VERDADEIRO ou FALSO
-            if (responseText.includes('VERDADEIRO')) {
-              return 'VERDADEIRO';
-            } else if (responseText.includes('FALSO')) {
-              return 'FALSO';
-            }
-            
-            // Se não encontrou um padrão claro, verificar por true/false em inglês
-            if (responseText.includes('TRUE')) {
-              return 'VERDADEIRO';
-            } else if (responseText.includes('FALSE')) {
-              return 'FALSO';
-            }
-            
-            // Se ainda não encontrou, verificar por V/F
-            if (responseText.includes(' V ') || responseText === 'V') {
-              return 'VERDADEIRO';
-            } else if (responseText.includes(' F ') || responseText === 'F') {
-              return 'FALSO';
-            }
-            
-            // Se ainda não conseguimos extrair um padrão conhecido, retornar o texto original
-            return responseText;
-            
-          } catch (retryError) {
-            // Verificar tipos de erros
-            const isOverloaded = 
-              retryError.status === 529 || 
-              (retryError.error?.error?.type === 'overloaded_error') ||
-              (retryError.headers && retryError.headers['x-should-retry'] === 'true');
-            
-            const isModelNotFound = 
-              retryError.status === 404 ||
-              retryError.message?.includes('model not found') ||
-              retryError.message?.includes('does not exist') ||
-              retryError.message?.includes('not supported');
-            
-            // Se o modelo não existir, pular para o próximo
-            if (isModelNotFound) {
-              console.log(`Modelo ${modelName} não encontrado ou não suportado, tentando próximo modelo...`);
-              break; // Sai do loop while para tentar o próximo modelo
-            }
-            
-            // Se for o último retry ou não for um erro de sobrecarga, tentar próximo modelo
-            if (retryCount >= MAX_RETRIES || !isOverloaded) {
-              console.log(`Erro com modelo ${modelName}, tentando próximo modelo...`);
-              break; // Sai do loop while para tentar o próximo modelo
-            }
-            
-            // Calcular atraso para o próximo retry (backoff exponencial)
-            console.log(`Servidor do Claude sobrecarregado. Aguardando ${retryDelay/1000} segundos para retry...`);
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
-            
-            // Aumentar o contador e o atraso para o próximo retry
-            retryCount++;
-            retryDelay *= 2; // Backoff exponencial
-          }
-        }
-      }
-      
-      // Se chegou aqui, é porque todos os modelos falharam
-      console.error('Todos os modelos Claude falharam');
-      return null;
-    } else {
-      // Biblioteca desatualizada
-      console.error('A versão da sua biblioteca @anthropic-ai/sdk não suporta a Messages API necessária para os modelos Claude 3.x');
-      return null;
-    }
-  } catch (error) {
-    console.error('Erro ao consultar Claude:', error);
+  // Verificar se podemos usar a Messages API
+  if (!anthropic || typeof anthropic.messages !== 'object' || typeof anthropic.messages.create !== 'function') {
+    console.error('A versão da biblioteca @anthropic-ai/sdk não suporta a Messages API necessária para os modelos Claude 3.x');
     return null;
   }
+  
+  // Função para fazer a requisição ao Claude
+  const makeClaudeRequest = async (client, modelName, prompt) => {
+    const response = await client.messages.create({
+      model: modelName,
+      max_tokens: 50,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    });
+    
+    return response.content[0].text;
+  };
+  
+  return askModel({
+    client: anthropic,
+    clientName: 'Claude', 
+    models: CLAUDE_MODELS,
+    question,
+    itemNumber,
+    makeRequest: makeClaudeRequest
+  });
 }
 
-// Função para obter resposta do GPT
+// Implementação específica para o GPT (OpenAI)
 async function askGPT(question, itemNumber) {
-  try {
-    if (!openai) {
-      console.log('Cliente do GPT não está configurado');
-      return null;
-    }
+  // Função para fazer a requisição ao GPT
+  const makeGPTRequest = async (client, modelName, prompt) => {
+    const response = await client.chat.completions.create({
+      model: modelName,
+      messages: [
+        { role: 'system', content: 'You are an expert in public tenders from the CEBRASP examination board' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 50,
+      temperature: 0.1
+    });
     
-    // Prompt melhorado com instruções mais claras
-    const enhancedPrompt = `
-${question}
-
-INSTRUÇÕES IMPORTANTES:
-- Avalie se o item ${itemNumber} é VERDADEIRO ou FALSO com base no texto acima
-- Responda APENAS com "VERDADEIRO" ou "FALSO" (em maiúsculas)
-- NÃO forneça explicações ou justificativas
-- Seja direto e objetivo
-`;
-    
-    // Configuração de retry
-    const MAX_RETRIES = 2;
-    const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-    
-    let retryCount = 0;
-    let retryDelay = INITIAL_RETRY_DELAY;
-    
-    // Usar a lista de modelos da configuração global
-    const models = GPT_MODELS;
-    
-    // Tentar cada modelo até obter sucesso
-    for (const model of models) {
-      retryCount = 0;
-      
-      while (retryCount <= MAX_RETRIES) {
-        try {
-          console.log(`Consultando GPT usando modelo ${model}` + 
-                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-          
-          const response = await openai.chat.completions.create({
-            model: model,
-            messages: [
-              { role: 'system', content: 'Você é um assistente especializado em responder questões de verdadeiro ou falso com extrema precisão e concisão. Siga EXATAMENTE o formato solicitado.' },
-              { role: 'user', content: enhancedPrompt }
-            ],
-            max_tokens: 50,
-            temperature: 0.1
-          });
-          
-          const responseText = response.choices[0].message.content.trim();
-          
-          // Processar a resposta para extrair apenas VERDADEIRO ou FALSO
-          if (responseText.includes('VERDADEIRO')) {
-            return 'VERDADEIRO';
-          } else if (responseText.includes('FALSO')) {
-            return 'FALSO';
-          }
-          
-          // Se não encontrou um padrão claro, verificar por true/false em inglês
-          if (responseText.includes('TRUE')) {
-            return 'VERDADEIRO';
-          } else if (responseText.includes('FALSE')) {
-            return 'FALSO';
-          }
-          
-          // Se ainda não encontrou, verificar por V/F
-          if (responseText.includes(' V ') || responseText === 'V') {
-            return 'VERDADEIRO';
-          } else if (responseText.includes(' F ') || responseText === 'F') {
-            return 'FALSO';
-          }
-          
-          // Se ainda não conseguimos extrair um padrão conhecido
-          console.log(`Formato de resposta não reconhecido: "${responseText}"`);
-          break;
-          
-        } catch (retryError) {
-          // Verificar se é um erro de quota ou rate limit
-          const isRetryable = 
-            retryError.status === 429 ||
-            retryError.code === 'insufficient_quota' ||
-            retryError.message?.includes('rate limit') ||
-            retryError.message?.includes('quota');
-          
-          // Verificar se o erro é devido ao modelo não existir
-          const isModelNotFound = 
-            retryError.message?.includes('model not found') ||
-            retryError.message?.includes('does not exist');
-          
-          // Se for erro de modelo, passamos para o próximo modelo
-          if (isModelNotFound) {
-            console.log(`Modelo ${model} não encontrado, tentando próximo modelo...`);
-            break; // Sai do loop while para tentar o próximo modelo
-          }
-          
-          // Se for o último retry ou não for um erro retryable, passamos para o próximo modelo
-          if (retryCount >= MAX_RETRIES || !isRetryable) {
-            console.log(`Erro com modelo ${model}, tentando próximo modelo...`);
-            break; // Sai do loop while para tentar o próximo modelo
-          }
-          
-          // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Limite de taxa excedido para ${model}. Aguardando ${retryDelay/1000} segundos para retry...`);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
-          
-          // Aumentar o contador e o atraso para o próximo retry
-          retryCount++;
-          retryDelay *= 2; // Backoff exponencial
-        }
-      }
-    }
-    
-    // Se chegou aqui, é porque nenhum modelo funcionou
-    console.error('Todos os modelos GPT falharam');
-    return null;
-  } catch (error) {
-    console.error('Erro ao consultar GPT:', error);
-    return null;
-  }
+    return response.choices[0].message.content;
+  };
+  
+  return askModel({
+    client: openai,
+    clientName: 'GPT', 
+    models: GPT_MODELS,
+    question,
+    itemNumber,
+    makeRequest: makeGPTRequest
+  });
 }
 
-// Função para obter resposta do Gemini
+// Implementação específica para o Gemini (Google)
 async function askGemini(question, itemNumber) {
-  try {
-    if (!genAI) {
-      console.log('Cliente do Gemini não está configurado');
-      return null;
-    }
+  // Função para fazer a requisição ao Gemini
+  const makeGeminiRequest = async (client, modelName, prompt) => {
+    const model = client.getGenerativeModel({ model: modelName });
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
     
-    // Prompt para obter apenas a resposta verdadeiro/falso
-    const enhancedPrompt = `
-${question}
-
-INSTRUÇÕES IMPORTANTES:
-- Avalie se o item ${itemNumber} é VERDADEIRO ou FALSO com base no texto acima
-- Responda APENAS com "VERDADEIRO" ou "FALSO" (em maiúsculas)
-- NÃO forneça explicações ou justificativas
-- Seja direto e objetivo
-`;
-    
-    // Configuração de retry
-    const MAX_RETRIES = 2;
-    const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-    
-    // Usar a lista de modelos da configuração global
-    const modelOptions = GEMINI_MODELS;
-    
-    // Para cada modelo, tente com retries
-    for (const modelName of modelOptions) {
-      let retryCount = 0;
-      let retryDelay = INITIAL_RETRY_DELAY;
-      
-      while (retryCount <= MAX_RETRIES) {
-        try {
-          console.log(`Consultando Gemini usando modelo ${modelName}` +
-                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-          
-          const model = genAI.getGenerativeModel({ model: modelName });
-          const result = await model.generateContent(enhancedPrompt);
-          const response = await result.response;
-          const text = response.text().trim();
-          
-          // Processar a resposta para extrair apenas VERDADEIRO ou FALSO
-          if (text.includes('VERDADEIRO')) {
-            return 'VERDADEIRO';
-          } else if (text.includes('FALSO')) {
-            return 'FALSO';
-          }
-          
-          // Se não encontrou um padrão claro, verificar por true/false em inglês
-          if (text.includes('TRUE')) {
-            return 'VERDADEIRO';
-          } else if (text.includes('FALSE')) {
-            return 'FALSO';
-          }
-          
-          // Se ainda não encontrou, verificar por V/F
-          if (text.includes(' V ') || text === 'V') {
-            return 'VERDADEIRO';
-          } else if (text.includes(' F ') || text === 'F') {
-            return 'FALSO';
-          }
-          
-          // Retornar o texto original se não encontrou nenhum padrão conhecido
-          return text;
-          
-        } catch (retryError) {
-          console.error(`Erro ao usar modelo ${modelName}:`, retryError.message);
-          
-          // Verificar se é o último retry
-          if (retryCount >= MAX_RETRIES) {
-            console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
-            break;
-          }
-          
-          // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Aguardando ${retryDelay/1000} segundos para retry...`);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
-          
-          // Aumentar o contador e o atraso para o próximo retry
-          retryCount++;
-          retryDelay *= 2; // Backoff exponencial
-        }
-      }
-    }
-    
-    // Se chegou aqui, é porque todos os modelos falharam
-    console.error('Todos os modelos Gemini falharam');
-    return null;
-    
-  } catch (error) {
-    console.error('Erro ao consultar Gemini:', error);
-    return null;
-  }
+    return response.text();
+  };
+  
+  return askModel({
+    client: genAI,
+    clientName: 'Gemini', 
+    models: GEMINI_MODELS,
+    question,
+    itemNumber,
+    makeRequest: makeGeminiRequest
+  });
 }
 
-// Função para obter resposta do DeepSeek
+// Implementação específica para o DeepSeek
 async function askDeepSeek(question, itemNumber) {
-  try {
-    if (!deepseek) {
-      console.log('Cliente do DeepSeek não está configurado');
-      return null;
-    }
+  // Função para fazer a requisição ao DeepSeek
+  const makeDeepSeekRequest = async (client, modelName, prompt) => {
+    const response = await client.chat.completions.create({
+      model: modelName,
+      messages: [
+        { role: 'system', content: 'You are an expert in public tenders from the CEBRASP examination board.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 50
+    });
     
-    // Prompt para obter apenas a resposta verdadeiro/falso
-    const enhancedPrompt = `
-${question}
-
-INSTRUÇÕES IMPORTANTES:
-- Avalie se o item ${itemNumber} é VERDADEIRO ou FALSO com base no texto acima
-- Responda APENAS com "VERDADEIRO" ou "FALSO" (em maiúsculas)
-- NÃO forneça explicações ou justificativas
-- Seja direto e objetivo
-`;
-    
-    // Configuração de retry
-    const MAX_RETRIES = 2;
-    const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-    
-    // Para cada modelo, tente com retries
-    for (const modelName of DEEPSEEK_MODELS) {
-      let retryCount = 0;
-      let retryDelay = INITIAL_RETRY_DELAY;
-      
-      while (retryCount <= MAX_RETRIES) {
-        try {
-          console.log(`Consultando DeepSeek usando modelo ${modelName}` +
-                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-          
-          const response = await deepseek.chat.completions.create({
-            model: modelName,
-            messages: [
-              { role: 'system', content: 'You are a helpful assistant.' },
-              { role: 'user', content: enhancedPrompt }
-            ],
-            temperature: 0.3,
-            max_tokens: 50
-          });
-          
-          const responseText = response.choices[0].message.content.trim();
-          
-          // Processar a resposta para extrair apenas VERDADEIRO ou FALSO
-          if (responseText.includes('VERDADEIRO')) {
-            return 'VERDADEIRO';
-          } else if (responseText.includes('FALSO')) {
-            return 'FALSO';
-          }
-          
-          // Se não encontrou um padrão claro, verificar por true/false em inglês
-          if (responseText.includes('TRUE')) {
-            return 'VERDADEIRO';
-          } else if (responseText.includes('FALSE')) {
-            return 'FALSO';
-          }
-          
-          // Se ainda não encontrou, verificar por V/F
-          if (responseText.includes(' V ') || responseText === 'V') {
-            return 'VERDADEIRO';
-          } else if (responseText.includes(' F ') || responseText === 'F') {
-            return 'FALSO';
-          }
-          
-          // Retornar o texto original se não encontrou nenhum padrão conhecido
-          return responseText;
-          
-        } catch (retryError) {
-          console.error(`Erro ao usar modelo ${modelName}:`, retryError.message);
-          
-          // Verificar se é erro de modelo não encontrado
-          const isModelNotFound = 
-            retryError.message?.includes('model not found') ||
-            retryError.message?.includes('does not exist');
-          
-          // Se for erro de modelo, passamos para o próximo modelo
-          if (isModelNotFound) {
-            console.log(`Modelo ${modelName} não encontrado, tentando próximo modelo...`);
-            break; // Sai do loop while para tentar o próximo modelo
-          }
-          
-          // Verificar se é o último retry
-          if (retryCount >= MAX_RETRIES) {
-            console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
-            break;
-          }
-          
-          // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Aguardando ${retryDelay/1000} segundos para retry...`);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
-          
-          // Aumentar o contador e o atraso para o próximo retry
-          retryCount++;
-          retryDelay *= 2; // Backoff exponencial
-        }
-      }
-    }
-    
-    // Se chegou aqui, é porque todos os modelos falharam
-    console.error('Todos os modelos DeepSeek falharam');
-    return null;
-    
-  } catch (error) {
-    console.error('Erro ao consultar DeepSeek:', error);
-    return null;
-  }
+    return response.choices[0].message.content;
+  };
+  
+  return askModel({
+    client: deepseek,
+    clientName: 'DeepSeek', 
+    models: DEEPSEEK_MODELS,
+    question,
+    itemNumber,
+    makeRequest: makeDeepSeekRequest
+  });
 }
 
-// Função para obter resposta do Maritaca
+// Implementação específica para o Maritaca
 async function askMaritaca(question, itemNumber) {
-  try {
-    if (!maritaca) {
-      console.log('Cliente do Maritaca não está configurado');
-      return null;
-    }
+  // Função para fazer a requisição ao Maritaca
+  const makeMaritacaRequest = async (client, modelName, prompt) => {
+    const response = await client.chat.completions.create({
+      model: modelName,
+      messages: [
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 50
+    });
     
-    // Prompt para obter apenas a resposta verdadeiro/falso
-    const enhancedPrompt = `
-${question}
-
-INSTRUÇÕES IMPORTANTES:
-- Avalie se o item ${itemNumber} é VERDADEIRO ou FALSO com base no texto acima
-- Responda APENAS com "VERDADEIRO" ou "FALSO" (em maiúsculas)
-- NÃO forneça explicações ou justificativas
-- Seja direto e objetivo
-`;
-    
-    // Configuração de retry
-    const MAX_RETRIES = 2;
-    const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-    
-    // Para cada modelo, tente com retries
-    for (const modelName of MARITACA_MODELS) {
-      let retryCount = 0;
-      let retryDelay = INITIAL_RETRY_DELAY;
-      
-      while (retryCount <= MAX_RETRIES) {
-        try {
-          console.log(`Consultando Maritaca usando modelo ${modelName}` +
-                     (retryCount > 0 ? ` (tentativa ${retryCount+1}/${MAX_RETRIES+1})` : ''));
-          
-          const response = await maritaca.chat.completions.create({
-            model: modelName,
-            messages: [
-              { role: 'user', content: enhancedPrompt }
-            ],
-            temperature: 0.3,
-            max_tokens: 50
-          });
-          
-          const responseText = response.choices[0].message.content.trim();
-          
-          // Processar a resposta para extrair apenas VERDADEIRO ou FALSO
-          if (responseText.includes('VERDADEIRO')) {
-            return 'VERDADEIRO';
-          } else if (responseText.includes('FALSO')) {
-            return 'FALSO';
-          }
-          
-          // Se não encontrou um padrão claro, verificar por true/false em inglês
-          if (responseText.includes('TRUE')) {
-            return 'VERDADEIRO';
-          } else if (responseText.includes('FALSE')) {
-            return 'FALSO';
-          }
-          
-          // Se ainda não encontrou, verificar por V/F
-          if (responseText.includes(' V ') || responseText === 'V') {
-            return 'VERDADEIRO';
-          } else if (responseText.includes(' F ') || responseText === 'F') {
-            return 'FALSO';
-          }
-          
-          // Retornar o texto original se não encontrou nenhum padrão conhecido
-          return responseText;
-          
-        } catch (retryError) {
-          console.error(`Erro ao usar modelo ${modelName}:`, retryError.message);
-          
-          // Verificar se é erro de modelo não encontrado
-          const isModelNotFound = 
-            retryError.message?.includes('model not found') ||
-            retryError.message?.includes('does not exist');
-          
-          // Se for erro de modelo, passamos para o próximo modelo
-          if (isModelNotFound) {
-            console.log(`Modelo ${modelName} não encontrado, tentando próximo modelo...`);
-            break; // Sai do loop while para tentar o próximo modelo
-          }
-          
-          // Verificar se é o último retry
-          if (retryCount >= MAX_RETRIES) {
-            console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
-            break;
-          }
-          
-          // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Aguardando ${retryDelay/1000} segundos para retry...`);
-          await new Promise(resolve => setTimeout(resolve, retryDelay));
-          
-          // Aumentar o contador e o atraso para o próximo retry
-          retryCount++;
-          retryDelay *= 2; // Backoff exponencial
-        }
-      }
-    }
-    
-    // Se chegou aqui, é porque todos os modelos falharam
-    console.error('Todos os modelos Maritaca falharam');
-    return null;
-    
-  } catch (error) {
-    console.error('Erro ao consultar Maritaca:', error);
-    return null;
-  }
+    return response.choices[0].message.content;
+  };
+  
+  return askModel({
+    client: maritaca,
+    clientName: 'Maritaca', 
+    models: MARITACA_MODELS,
+    question,
+    itemNumber,
+    makeRequest: makeMaritacaRequest
+  });
 }
 
-function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse) {
+async function askXAI(question, itemNumber) {
+  // Função para fazer a requisição ao XAI
+  const makeXAIRequest = async (client, modelName, prompt) => {
+    const response = await client.chat.completions.create({
+      model: modelName,
+      messages: [
+        { role: 'system', content: 'You are an expert in public tenders from the CEBRASP examination board.' },
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 50
+    });
+    
+    return response.choices[0].message.content;
+  };
+  
+  return askModel({
+    client: xAi,
+    clientName: 'XAI', 
+    models: XAI_MODELS,
+    question,
+    itemNumber,
+    makeRequest: makeXAIRequest
+  });
+}
+
+function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse, xaiResponse) {
   // Se alguma resposta estiver faltando, retorna as disponíveis
-  const responses = [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse].filter(r => r && r.trim() !== '');
+  const responses = [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse, xaiResponse].filter(r => r && r.trim() !== '');
   
   if (responses.length === 0) {
     console.log('Nenhuma resposta válida obtida de nenhum modelo');
@@ -788,6 +555,7 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   const MODEL_WEIGHTS = {
     'claude': 5,
     'gemini': 6,
+    'xai': 5,
     'gpt': 4,
     'deepseek': 3,
     'maritaca': 3
@@ -799,7 +567,8 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
     { model: 'gpt', response: normalizeResponse(gptResponse), weight: MODEL_WEIGHTS['gpt'] },
     { model: 'gemini', response: normalizeResponse(geminiResponse), weight: MODEL_WEIGHTS['gemini'] },
     { model: 'deepseek', response: normalizeResponse(deepseekResponse), weight: MODEL_WEIGHTS['deepseek'] },
-    { model: 'maritaca', response: normalizeResponse(maritacaResponse), weight: MODEL_WEIGHTS['maritaca'] }
+    { model: 'maritaca', response: normalizeResponse(maritacaResponse), weight: MODEL_WEIGHTS['maritaca'] },
+    { model: 'xai', response: normalizeResponse(xaiResponse), weight: MODEL_WEIGHTS['xai'] }
   ].filter(item => item.response !== null);
   
   if (allResponsesWithModels.length === 0) {
@@ -856,9 +625,10 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   // 3. Verificar se Claude e Gemini concordam (são os modelos mais confiáveis)
   const claudeResponse2 = allResponsesWithModels.find(item => item.model === 'claude')?.response;
   const geminiResponse2 = allResponsesWithModels.find(item => item.model === 'gemini')?.response;
+  const xResponse2 = allResponsesWithModels.find(item => item.model === 'xai')?.response;
   
-  if (claudeResponse2 && geminiResponse2 && claudeResponse2 === geminiResponse2) {
-    console.log(`Consenso forte: Claude e Gemini concordam em ${claudeResponse2}`);
+  if (claudeResponse2 && xResponse2 && geminiResponse2 && claudeResponse2 === geminiResponse2 && xResponse2 === geminiResponse2 && xResponse2 === claudeResponse2) {
+    console.log(`Consenso forte: Claude, Gemini e Grok concordam em ${claudeResponse2}`);
     return claudeResponse2;
   }
   
@@ -924,6 +694,7 @@ async function saveResponseToFile(text) {
  *       O sistema consulta os seguintes modelos (quando disponíveis):
  *       - Claude (Anthropic)
  *       - GPT (OpenAI)
+ *       - Grok (xAI)
  *       - Gemini (Google)
  *       - DeepSeek
  *       - Maritaca (Sabiá)
@@ -959,12 +730,13 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       const fullText = `${extractedData.texto_principal}\n\n${item.afirmacao}`;
 
       // Consultar todos os modelos de IA em paralelo
-      const [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse] = await Promise.all([
+      const [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse, xaiResponse] = await Promise.all([
         askClaude(fullText, item.numero),
         askGPT(fullText, item.numero),
         askGemini(fullText, item.numero),
         askDeepSeek(fullText, item.numero),
-        askMaritaca(fullText, item.numero)
+        askMaritaca(fullText, item.numero),
+        askXAI(fullText, item.numero)
       ]);
 
       // Encontrar resposta consensual
@@ -973,60 +745,62 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
         gptResponse, 
         geminiResponse, 
         deepseekResponse, 
-        maritacaResponse
+        maritacaResponse,
+        xaiResponse
       );
 
       // Solicitar uma justificativa ao Claude (geralmente é o mais preciso em explicações)
-      let justificativa = '';
-      try {
-        if (anthropic) {
-          const justPrompt = `
-${extractedData.texto_principal}
+//       let justificativa = '';
+//       try {
+//         if (anthropic) {
+//           const justPrompt = `
+// ${extractedData.texto_principal}
 
-Item ${item.numero}: ${item.afirmacao}
+// Item ${item.numero}: ${item.afirmacao}
 
-Este item foi avaliado como ${commonResponse}.
+// Este item foi avaliado como ${commonResponse}.
 
-Por favor, forneça uma justificativa concisa para esta resposta, explicando por que o item é ${commonResponse} com base no texto.
-Mantenha a explicação objetiva e direta, com no máximo 2-3 frases.
-`;
+// Por favor, forneça uma justificativa concisa para esta resposta, explicando por que o item é ${commonResponse} com base no texto.
+// Mantenha a explicação objetiva e direta, com no máximo 2-3 frases.
+// `;
 
-          for (const modelName of CLAUDE_MODELS) {
-            try {
-              const justResponse = await anthropic.messages.create({
-                model: modelName,
-                max_tokens: 150,
-                messages: [
-                  { role: 'user', content: justPrompt }
-                ]
-              });
+//           for (const modelName of CLAUDE_MODELS) {
+//             try {
+//               const justResponse = await anthropic.messages.create({
+//                 model: modelName,
+//                 max_tokens: 150,
+//                 messages: [
+//                   { role: 'user', content: justPrompt }
+//                 ]
+//               });
               
-              justificativa = justResponse.content[0].text.trim();
-              break; // Se conseguiu, sai do loop
-            } catch (err) {
-              console.log(`Erro ao obter justificativa do modelo ${modelName}, tentando outro...`);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Erro ao obter justificativa:', error);
-        justificativa = 'Não foi possível gerar uma justificativa.';
-      }
+//               justificativa = justResponse.content[0].text.trim();
+//               break; // Se conseguiu, sai do loop
+//             } catch (err) {
+//               console.log(`Erro ao obter justificativa do modelo ${modelName}, tentando outro...`);
+//             }
+//           }
+//         }
+//       } catch (error) {
+//         console.error('Erro ao obter justificativa:', error);
+//         justificativa = 'Não foi possível gerar uma justificativa.';
+//       }
 
-      if (!justificativa) {
-        justificativa = 'Não foi possível gerar uma justificativa.';
-      }
+      // if (!justificativa) {
+      //   justificativa = 'Não foi possível gerar uma justificativa.';
+      // }
 
       return {
         ...item,
         resposta: commonResponse,
-        justificativa: justificativa,
+        //justificativa: justificativa,
         respostas_modelos: {
           claude: claudeResponse,
           gpt: gptResponse,
           gemini: geminiResponse,
           deepseek: deepseekResponse,
-          maritaca: maritacaResponse
+          maritaca: maritacaResponse,
+          xai: xaiResponse
         }
       };
     }));
