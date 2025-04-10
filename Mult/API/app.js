@@ -50,14 +50,14 @@ const GEMINI_MODELS = [
 
 // Configuração dos modelos DeepSeek (em ordem de preferência)
 const DEEPSEEK_MODELS = [
-  "deepseek-chat",
-  "deepseek-coder"  // Adicione ou remova modelos conforme necessário
+  "deepseek-reasoner",
+  "deepseek-chat"  // Adicione ou remova modelos conforme necessário
 ];
 
 // Configuração dos modelos Maritaca (em ordem de preferência)
 const MARITACA_MODELS = [
-  "sabia-3",
-  "sabia-2"  // Adicione ou remova modelos conforme necessário
+  "sabia-3",  // Adicione ou remova modelos conforme necessário
+  "sabiazinho-3",
 ];
 
 //------------------------------------------------------------------------
@@ -111,18 +111,6 @@ try {
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
     console.log("Cliente Anthropic (Claude) inicializado com sucesso");
-
-
-    // Verificar qual tipo de API está disponível
-    if (anthropic.messages && anthropic.messages.create) {
-      console.log("API do Claude usando messages.create");
-    } else if (anthropic.completions && anthropic.completions.create) {
-      console.log("API do Claude usando completions.create");
-    } else if (anthropic.create) {
-      console.log("API do Claude usando create diretamente");
-    } else {
-      console.log("AVISO: Interface da API do Claude não reconhecida");
-    }
 
   } else {
     console.log("Chave de API do Anthropic não configurada");

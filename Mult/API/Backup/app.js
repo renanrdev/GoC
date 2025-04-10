@@ -104,18 +104,6 @@ try {
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
     console.log("Cliente Anthropic (Claude) inicializado com sucesso");
-
-    
-    // Verificar qual tipo de API está disponível
-    if (anthropic.messages && anthropic.messages.create) {
-      console.log("API do Claude usando messages.create");
-    } else if (anthropic.completions && anthropic.completions.create) {
-      console.log("API do Claude usando completions.create");
-    } else if (anthropic.create) {
-      console.log("API do Claude usando create diretamente");
-    } else {
-      console.log("AVISO: Interface da API do Claude não reconhecida");
-    }
     
   } else {
     console.log("Chave de API do Anthropic não configurada");
@@ -185,6 +173,20 @@ const ensureDirExists = (dirPath) => {
 
 ensureDirExists(path.join(__dirname, 'uploads'));
 ensureDirExists(path.join(__dirname, 'responses'));
+
+function withTimeout(promise, timeoutMs = 10000, errorMessage = 'Operação excedeu o tempo limite') {
+  // Cria uma promise que rejeita após o tempo definido
+  const timeoutPromise = new Promise((_, reject) => {
+    const id = setTimeout(() => {
+      clearTimeout(id);
+      reject(new Error(errorMessage));
+    }, timeoutMs);
+  });
+
+  // Retorna a primeira promise que resolver ou rejeitar
+  return Promise.race([promise, timeoutPromise]);
+}
+
 
 // Função para extrair texto de uma imagem usando OCR
 async function extractTextFromImage(imagePath) {
