@@ -201,7 +201,7 @@ const ensureDirExists = (dirPath) => {
 ensureDirExists(path.join(__dirname, 'uploads'));
 ensureDirExists(path.join(__dirname, 'responses'));
 
-const TIMEOUT_MS = 20000; // 20 segundos
+const TIMEOUT_MS = 10000; // 20 segundos
 const MAX_RETRIES = 2;
 const INITIAL_RETRY_DELAY = 1000; // 1 segundo
 
@@ -683,6 +683,58 @@ async function saveResponseToFile(text) {
 
 
 /**
+ * Função para executar todos os modelos de IA (Claude, GPT, XAI, etc.) em paralelo
+ * @param {string} question - Texto da questão
+ * @param {string|number} itemNumber - Número do item
+ * @returns {Promise<Object>} - Objeto com respostas de todos os modelos
+ */
+async function askAllModelsInParallel(question, itemNumber) {
+  console.log(`Consultando todos os modelos de IA em paralelo para o item ${itemNumber}`);
+  
+  // Executar todas as plataformas de IA em paralelo
+  const results = await Promise.allSettled([
+    // Cada uma dessas funções tentará seus diferentes modelos em sequência
+    askClaude(question, itemNumber),
+    askGPT(question, itemNumber),
+    askGemini(question, itemNumber),
+    askDeepSeek(question, itemNumber),
+    askMaritaca(question, itemNumber),
+    askXAI(question, itemNumber)
+  ]);
+  
+  // Extrair resultados, tratando possíveis falhas
+  const [
+    claudeResponse, 
+    gptResponse, 
+    geminiResponse, 
+    deepseekResponse, 
+    maritacaResponse,
+    xaiResponse
+  ] = results.map(result => 
+    result.status === 'fulfilled' ? result.value : null
+  );
+  
+  // Logar quais plataformas responderam
+  console.log("Respostas obtidas:");
+  console.log("- Claude:", claudeResponse ? "✅" : "❌");
+  console.log("- GPT:", gptResponse ? "✅" : "❌");
+  console.log("- Gemini:", geminiResponse ? "✅" : "❌");
+  console.log("- DeepSeek:", deepseekResponse ? "✅" : "❌");
+  console.log("- Maritaca:", maritacaResponse ? "✅" : "❌");
+  console.log("- XAI:", xaiResponse ? "✅" : "❌");
+  
+  return {
+    claude: claudeResponse,
+    gpt: gptResponse,
+    gemini: geminiResponse,
+    deepseek: deepseekResponse,
+    maritaca: maritacaResponse,
+    xai: xaiResponse
+  };
+}
+
+
+/**
  * @swagger
  * /api/analyze:
  *   post:
@@ -722,7 +774,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     
     console.log(`Analisando ${extractedData.itens.length} itens...`);
     
-    // Analisar cada item com múltiplos modelos de IA
+    // Analisar cada item em paralelo
     const itensAnalysed = await Promise.all(extractedData.itens.map(async (item) => {
       console.log(`Analisando item ${item.numero}...`);
 
@@ -730,26 +782,19 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       const fullText = `${extractedData.texto_principal}\n\n${item.afirmacao}`;
 
       // Consultar todos os modelos de IA em paralelo
-      const [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse, xaiResponse] = await Promise.all([
-        askClaude(fullText, item.numero),
-        askGPT(fullText, item.numero),
-        askGemini(fullText, item.numero),
-        askDeepSeek(fullText, item.numero),
-        askMaritaca(fullText, item.numero),
-        askXAI(fullText, item.numero)
-      ]);
+      const modelResponses = await askAllModelsInParallel(fullText, item.numero);
 
       // Encontrar resposta consensual
       const commonResponse = findCommonResponse(
-        claudeResponse, 
-        gptResponse, 
-        geminiResponse, 
-        deepseekResponse, 
-        maritacaResponse,
-        xaiResponse
+        modelResponses.claude, 
+        modelResponses.gpt, 
+        modelResponses.gemini, 
+        modelResponses.deepseek, 
+        modelResponses.maritaca,
+        modelResponses.xai
       );
 
-      // Solicitar uma justificativa ao Claude (geralmente é o mais preciso em explicações)
+      // Solicitar uma justificativa
 //       let justificativa = '';
 //       try {
 //         if (anthropic) {
@@ -786,22 +831,15 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 //         justificativa = 'Não foi possível gerar uma justificativa.';
 //       }
 
-      // if (!justificativa) {
-      //   justificativa = 'Não foi possível gerar uma justificativa.';
-      // }
+//       if (!justificativa) {
+//         justificativa = 'Não foi possível gerar uma justificativa.';
+//       }
 
       return {
         ...item,
         resposta: commonResponse,
         //justificativa: justificativa,
-        respostas_modelos: {
-          claude: claudeResponse,
-          gpt: gptResponse,
-          gemini: geminiResponse,
-          deepseek: deepseekResponse,
-          maritaca: maritacaResponse,
-          xai: xaiResponse
-        }
+        respostas_modelos: modelResponses
       };
     }));
 

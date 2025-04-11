@@ -58,7 +58,7 @@ Instruções importantes:
 
     // Chamar API de visão do GPT-4
     const response = await openai.chat.completions.create({
-      model: "gpt-4.5-preview",
+      model: "gpt-4o",
       messages: [
         {
           role: "user",
