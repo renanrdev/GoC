@@ -29,6 +29,9 @@ async function extractTextFromImage(imagePath, options = {}) {
     const extractionPrompt = `
 Analise cuidadosamente a imagem que contém um texto e itens numerados.
 
+IMPORTANTE: Mantenha EXATAMENTE os mesmos números que aparecem à esquerda de cada item na imagem.
+Por exemplo, se a imagem mostrar itens 57, 58, 59 e 60, preserve estes números específicos.
+
 Extraia o texto principal e identifique cada item numerado que precisa ser avaliado como verdadeiro ou falso.
 Não faça nenhuma análise ou julgamento sobre os itens, apenas extraia o conteúdo.
 
@@ -38,20 +41,21 @@ Forneça as informações em um formato JSON estruturado:
   "texto_principal": "transcrição do texto principal da questão",
   "itens": [
     {
-      "numero": "1",
-      "afirmacao": "texto completo da afirmação 1"
+      "numero": "57",  // Use EXATAMENTE o número mostrado na imagem, não renumere
+      "afirmacao": "texto completo da afirmação"
     },
     {
-      "numero": "2",
-      "afirmacao": "texto completo da afirmação 2"
+      "numero": "58",  // Use EXATAMENTE o número mostrado na imagem, não renumere
+      "afirmacao": "texto completo da afirmação"
     },
-    // ... outros itens
+    // ... outros itens com seus números originais
   ]
 }
 
 Instruções importantes:
 - Seja extremamente preciso na transcrição do texto
 - Extraia TODOS os itens visíveis na imagem
+- Preserve os números EXATAMENTE como aparecem na imagem (ex: 57, 58, 59, 60)
 - Preserve a formatação original incluindo parênteses, citações, etc.
 - Se houver qualquer dúvida ou texto ilegível, indique claramente
 `;
