@@ -19,26 +19,23 @@ const ocrConfig = require('./ocrConfig');
 // Carregar variáveis de ambiente
 dotenv.config();
 
-//------------------------------------------------------------------------
-// CONFIGURAÇÃO GLOBAL DOS MODELOS DE IA
-// Altere estas variáveis para mudar os modelos utilizados
-//------------------------------------------------------------------------
-
 // Configuração dos modelos Claude (em ordem de preferência)
 const CLAUDE_MODELS = [
   "claude-3-7-sonnet-20250219",  // Claude mais recente e avançado
   "claude-3-5-sonnet-20241022",  // Claude 3.5 Sonnet (nova versão)
   "claude-3-5-haiku-20241022",   // Claude 3.5 Haiku (mais rápido)
-  "claude-3-opus-20240229",      // Claude 3 Opus (mais potente, mas mais antigo)
-  "claude-3-5-sonnet-20240620",  // Claude 3.5 Sonnet (versão antiga)
-  "claude-3-haiku-20240307"      // Claude 3 Haiku (versão antiga)
 ];
 
 // Configuração dos modelos GPT (em ordem de preferência)
 const GPT_MODELS = [
+  "gpt-4.5-preview",
+  "gpt-4o",
   "gpt-3.5-turbo",
-  "gpt-3.5-turbo-instruct",
-  "text-davinci-003"
+];
+
+const XAI_MODELS = [
+  "grok-3-beta",
+  "grok-3-fast-beta",  // Adicione ou remova modelos conforme necessário
 ];
 
 // Configuração dos modelos Gemini (em ordem de preferência)
@@ -103,6 +100,7 @@ let openai = null;
 let genAI = null;
 let deepseek = null;
 let maritaca = null;
+let xai = null;
 
 // Inicializar os clientes apenas se as chaves estiverem disponíveis
 try {
@@ -117,6 +115,20 @@ try {
   }
 } catch (error) {
   console.error("Erro ao inicializar cliente Anthropic:", error.message);
+}
+
+try{
+  if(process.env.XAI_API_KEY){
+    xai = new OpenAI({
+      baseURL: 'https://api.x.ai/v1',
+      apiKey: process.env.XAI_API_KEY,
+    });
+    console.log("Cliente XAI inicializado com sucesso");
+} else{
+    console.log("Chave de API do XAI não configurada");
+  }
+} catch (error) {
+  console.error("Erro ao inicializar cliente XAI:", error.message);
 }
 
 try {
@@ -181,7 +193,7 @@ const ensureDirExists = (dirPath) => {
 ensureDirExists(path.join(__dirname, 'uploads'));
 ensureDirExists(path.join(__dirname, 'responses'));
 
-// Função para obter resposta do Claude com retry automático
+// Função para obter resposta do Claude com timeout e retry automático
 async function askClaude(question) {
   try {
     if (!anthropic) {
@@ -189,7 +201,7 @@ async function askClaude(question) {
       return null;
     }
 
-    // Modificar o prompt para obter apenas a alternativa correta
+    // Prompt otimizado
     const enhancedPrompt = `
 ${question}
 
@@ -200,11 +212,12 @@ INSTRUÇÕES IMPORTANTES:
 - Seja direto e objetivo
 `;
 
-    // Verificar se temos acesso à Messages API (única compatível com Claude 3.x)
+    // Verificar se temos acesso à Messages API
     if (typeof anthropic.messages === 'object' && typeof anthropic.messages.create === 'function') {
-      // Configuração de retry
+      // Configuração de timeout e retry
+      const TIMEOUT_MS = 10000; // 10 segundos
       const MAX_RETRIES = 2;
-      const INITIAL_RETRY_DELAY = 1000; // 1 segundo
+      const INITIAL_RETRY_DELAY = 1000;
 
       // Tentar cada modelo sequencialmente
       for (const modelName of CLAUDE_MODELS) {
@@ -216,13 +229,22 @@ INSTRUÇÕES IMPORTANTES:
             console.log(`Consultando Claude usando modelo ${modelName}` +
               (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
 
-            const response = await anthropic.messages.create({
+            // Criar uma promise com timeout
+            const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error('Timeout excedido')), TIMEOUT_MS);
+            });
+
+            // Promise da requisição principal
+            const requestPromise = anthropic.messages.create({
               model: modelName,
               max_tokens: 1000,
               messages: [
                 { role: 'user', content: enhancedPrompt }
               ]
             });
+
+            // Executar com race para implementar o timeout
+            const response = await Promise.race([requestPromise, timeoutPromise]);
 
             const responseText = response.content[0].text;
 
@@ -242,6 +264,8 @@ INSTRUÇÕES IMPORTANTES:
             return responseText;
 
           } catch (retryError) {
+            const isTimeout = retryError.message === 'Timeout excedido';
+            
             // Verificar tipos de erros
             const isOverloaded =
               retryError.status === 529 ||
@@ -260,14 +284,14 @@ INSTRUÇÕES IMPORTANTES:
               break; // Sai do loop while para tentar o próximo modelo
             }
 
-            // Se for o último retry ou não for um erro de sobrecarga, tentar próximo modelo
-            if (retryCount >= MAX_RETRIES || !isOverloaded) {
+            // Se for o último retry ou não for um erro de sobrecarga/timeout, tentar próximo modelo
+            if (retryCount >= MAX_RETRIES || (!isOverloaded && !isTimeout)) {
               console.log(`Erro com modelo ${modelName}, tentando próximo modelo...`);
               break; // Sai do loop while para tentar o próximo modelo
             }
 
             // Calcular atraso para o próximo retry (backoff exponencial)
-            console.log(`Servidor do Claude sobrecarregado. Aguardando ${retryDelay / 1000} segundos para retry...`);
+            console.log(`${isTimeout ? 'Timeout excedido' : 'Servidor do Claude sobrecarregado'}. Aguardando ${retryDelay / 1000} segundos para retry...`);
             await new Promise(resolve => setTimeout(resolve, retryDelay));
 
             // Aumentar o contador e o atraso para o próximo retry
@@ -291,6 +315,118 @@ INSTRUÇÕES IMPORTANTES:
   }
 }
 
+// Função para obter resposta do XAI (Grok)
+async function askXAI(question) {
+  try {
+    if (!xai) {
+      console.log('Cliente do XAI (Grok) não está configurado');
+      return null;
+    }
+
+    // Prompt otimizado
+    const enhancedPrompt = `
+${question}
+
+INSTRUÇÕES IMPORTANTES:
+- Responda APENAS com a letra da alternativa correta (A, B, C, D ou E)
+- NÃO forneça explicações ou justificativas
+- Retorne SOMENTE a alternativa correta, ex: "A alternativa correta é (B)"
+- Seja direto e objetivo
+`;
+
+    // Configuração de timeout e retry
+    const TIMEOUT_MS = 10000; // 10 segundos
+    const MAX_RETRIES = 2;
+    const INITIAL_RETRY_DELAY = 1000;
+
+    // Para cada modelo, tente com retries
+    for (const modelName of XAI_MODELS) {
+      let retryCount = 0;
+      let retryDelay = INITIAL_RETRY_DELAY;
+
+      while (retryCount <= MAX_RETRIES) {
+        try {
+          console.log(`Consultando XAI (Grok) usando modelo ${modelName}` +
+            (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
+
+          // Criar uma promise com timeout
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Timeout excedido')), TIMEOUT_MS);
+          });
+
+          // Promise da requisição principal
+          const requestPromise = xai.chat.completions.create({
+            model: modelName,
+            messages: [
+              { role: 'system', content: 'Você é um assistente especializado em responder questões de múltipla escolha.' },
+              { role: 'user', content: enhancedPrompt }
+            ],
+            temperature: 0.3,
+            max_tokens: 50
+          });
+
+          // Executar com race para implementar o timeout
+          const response = await Promise.race([requestPromise, timeoutPromise]);
+
+          const responseText = response.choices[0].message.content;
+
+          // Processar a resposta para extrair apenas a alternativa
+          const alternativeMatch = responseText.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
+          if (alternativeMatch) {
+            return `A alternativa correta é (${alternativeMatch[2]})`;
+          }
+
+          // Se não encontrou o padrão específico, tenta outro formato
+          const letterMatch = responseText.match(/^[^A-Za-z]*([A-E])[^A-Za-z]*$/);
+          if (letterMatch) {
+            return `A alternativa correta é (${letterMatch[1]})`;
+          }
+
+          // Retornar o texto original se não encontrou nenhum padrão conhecido
+          return responseText;
+
+        } catch (retryError) {
+          const isTimeout = retryError.message === 'Timeout excedido';
+          
+          // Verificar se é erro de modelo não encontrado
+          const isModelNotFound =
+            retryError.message?.includes('model not found') ||
+            retryError.message?.includes('does not exist');
+
+          // Se for erro de modelo, passamos para o próximo modelo
+          if (isModelNotFound) {
+            console.log(`Modelo ${modelName} não encontrado, tentando próximo modelo...`);
+            break; // Sai do loop while para tentar o próximo modelo
+          }
+
+          // Verificar se é o último retry
+          if (retryCount >= MAX_RETRIES) {
+            console.log(`Esgotado máximo de tentativas para ${modelName}, tentando próximo modelo...`);
+            break;
+          }
+
+          // Calcular atraso para o próximo retry (backoff exponencial)
+          console.log(`${isTimeout ? 'Timeout excedido' : 'Erro na requisição'} para ${modelName}. Aguardando ${retryDelay / 1000} segundos para retry...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+          // Aumentar o contador e o atraso para o próximo retry
+          retryCount++;
+          retryDelay *= 2; // Backoff exponencial
+        }
+      }
+    }
+
+    // Se chegou aqui, é porque todos os modelos falharam
+    console.error('Todos os modelos XAI (Grok) falharam');
+    return null;
+
+  } catch (error) {
+    console.error('Erro ao consultar XAI (Grok):', error);
+    return null;
+  }
+}
+
+// Função para obter resposta do GPT com timeout
 async function askGPT(question) {
   try {
     if (!openai) {
@@ -298,58 +434,58 @@ async function askGPT(question) {
       return null;
     }
 
-    // Prompt melhorado com instruções mais claras e formato estruturado
+    // Prompt melhorado com instruções claras
     const enhancedPrompt = `
-  ${question}
+${question}
   
-  INSTRUÇÕES IMPORTANTÍSSIMAS (SIGA EXATAMENTE ESTE FORMATO):
-  1. FORMATO OBRIGATÓRIO: "A alternativa correta é (X)" onde X é a letra A, B, C, D ou E.
-  2. NÃO REPITA o texto das alternativas.
-  3. NÃO inclua explicações ou justificativas.
-  4. NÃO use formatação adicional.
-  5. APENAS retorne a resposta no formato solicitado.
-  
-  EXEMPLO DE RESPOSTA DESEJADA:
-  "A alternativa correta é (B)"
-  
-  EXEMPLO DE RESPOSTA INDESEJADA:
-  "A) Somente as proposições I, II e IV estão corretas."
-  
-  LEMBRE-SE: Responda APENAS com "A alternativa correta é (X)" e nada mais.
-  `;
+INSTRUÇÕES IMPORTANTÍSSIMAS (SIGA EXATAMENTE ESTE FORMATO):
+1. FORMATO OBRIGATÓRIO: "A alternativa correta é (X)" onde X é a letra A, B, C, D ou E.
+2. NÃO REPITA o texto das alternativas.
+3. NÃO inclua explicações ou justificativas.
+4. NÃO use formatação adicional.
+5. APENAS retorne a resposta no formato solicitado.
+`;
 
-    // Configuração de retry
+    // Configuração de timeout e retry
+    const TIMEOUT_MS = 10000; // 10 segundos
     const MAX_RETRIES = 2;
-    const INITIAL_RETRY_DELAY = 1000; // 1 segundo
-
-    let retryCount = 0;
-    let retryDelay = INITIAL_RETRY_DELAY;
+    const INITIAL_RETRY_DELAY = 1000;
 
     // Usar a lista de modelos da configuração global
     const models = GPT_MODELS;
 
     // Tentar cada modelo até obter sucesso
     for (const model of models) {
-      retryCount = 0;
+      let retryCount = 0;
+      let retryDelay = INITIAL_RETRY_DELAY;
 
       while (retryCount <= MAX_RETRIES) {
         try {
           console.log(`Consultando GPT usando modelo ${model}` +
             (retryCount > 0 ? ` (tentativa ${retryCount + 1}/${MAX_RETRIES + 1})` : ''));
 
-          const response = await openai.chat.completions.create({
+          // Criar uma promise com timeout
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Timeout excedido')), TIMEOUT_MS);
+          });
+
+          // Promise da requisição principal
+          const requestPromise = openai.chat.completions.create({
             model: model,
             messages: [
               { role: 'system', content: 'Você é um assistente especializado em responder questões de múltipla escolha com extrema precisão e concisão. Siga EXATAMENTE o formato solicitado.' },
               { role: 'user', content: enhancedPrompt }
             ],
-            max_tokens: 50,  // Reduzido para evitar respostas longas
-            temperature: 0.1 // Temperatura baixa para respostas mais previsíveis
+            max_tokens: 50,
+            temperature: 0.1
           });
 
+          // Executar com race para implementar o timeout
+          const response = await Promise.race([requestPromise, timeoutPromise]);
+          
           const responseText = response.choices[0].message.content.trim();
 
-          // Processamento mais robusto para extrair a alternativa correta
+          // Processamento robusto para extrair a alternativa correta
           const alternativeMatch = responseText.match(/alternativa correta [éeh\s:]+([(]?)([A-E])([)]?)/i);
           if (alternativeMatch) {
             return `A alternativa correta é (${alternativeMatch[2]})`;
@@ -384,6 +520,8 @@ async function askGPT(question) {
           break;
 
         } catch (retryError) {
+          const isTimeout = retryError.message === 'Timeout excedido';
+          
           // Verificar se é um erro de quota ou rate limit
           const isRetryable =
             retryError.status === 429 ||
@@ -402,14 +540,14 @@ async function askGPT(question) {
             break; // Sai do loop while para tentar o próximo modelo
           }
 
-          // Se for o último retry ou não for um erro retryable, passamos para o próximo modelo
-          if (retryCount >= MAX_RETRIES || !isRetryable) {
+          // Se for o último retry ou não for um erro retryable/timeout, passamos para o próximo modelo
+          if (retryCount >= MAX_RETRIES || (!isRetryable && !isTimeout)) {
             console.log(`Erro com modelo ${model}, tentando próximo modelo...`);
             break; // Sai do loop while para tentar o próximo modelo
           }
 
           // Calcular atraso para o próximo retry (backoff exponencial)
-          console.log(`Limite de taxa excedido para ${model}. Aguardando ${retryDelay / 1000} segundos para retry...`);
+          console.log(`${isTimeout ? 'Timeout excedido' : 'Limite de taxa excedido'} para ${model}. Aguardando ${retryDelay / 1000} segundos para retry...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
 
           // Aumentar o contador e o atraso para o próximo retry
@@ -715,9 +853,9 @@ INSTRUÇÕES IMPORTANTES:
   }
 }
 
-function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse) {
+function findCommonResponse(claudeResponse, gptResponse, xaiResponse, geminiResponse, deepseekResponse, maritacaResponse) {
   // Se alguma resposta estiver faltando, retorna as disponíveis
-  const responses = [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse].filter(r => r && r.trim() !== '');
+  const responses = [claudeResponse, gptResponse, xaiResponse, geminiResponse, deepseekResponse, maritacaResponse].filter(r => r && r.trim() !== '');
 
   if (responses.length === 0) {
     console.log('Nenhuma resposta válida obtida de nenhum modelo');
@@ -751,8 +889,9 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   // Definir pesos para cada modelo (usados no desempate)
   const MODEL_WEIGHTS = {
     'claude': 5,
-    'gemini': 6,
+    'gemini': 5,
     'gpt': 4,
+    'xai': 4,  // Adicionar peso para XAI/Grok
     'deepseek': 3,
     'maritaca': 3
   };
@@ -761,6 +900,7 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   const allResponsesWithAlternatives = [
     { model: 'claude', response: claudeResponse, alternative: claudeResponse ? extractAlternative(claudeResponse) : null, weight: MODEL_WEIGHTS['claude'] },
     { model: 'gpt', response: gptResponse, alternative: gptResponse ? extractAlternative(gptResponse) : null, weight: MODEL_WEIGHTS['gpt'] },
+    { model: 'xai', response: xaiResponse, alternative: xaiResponse ? extractAlternative(xaiResponse) : null, weight: MODEL_WEIGHTS['xai'] },
     { model: 'gemini', response: geminiResponse, alternative: geminiResponse ? extractAlternative(geminiResponse) : null, weight: MODEL_WEIGHTS['gemini'] },
     { model: 'deepseek', response: deepseekResponse, alternative: deepseekResponse ? extractAlternative(deepseekResponse) : null, weight: MODEL_WEIGHTS['deepseek'] },
     { model: 'maritaca', response: maritacaResponse, alternative: maritacaResponse ? extractAlternative(maritacaResponse) : null, weight: MODEL_WEIGHTS['maritaca'] }
@@ -837,7 +977,7 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   if (alternativesWith2Votes.length === 1) {
     const alt = alternativesWith2Votes[0];
     const models = modelsByAlternative[alt];
-    const hasBigThreeModel = models.some(model => ['claude', 'gemini', 'gpt'].includes(model));
+    const hasBigThreeModel = models.some(model => ['claude', 'gemini', 'gpt', 'xai'].includes(model));
 
     if (hasBigThreeModel) {
       console.log(`Consenso parcial: alternativa ${alt} com 2 votos de ${models.join(', ')}, incluindo modelo principal`);
@@ -847,37 +987,26 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
 
   // Se houver múltiplas alternativas com 2 votos, priorizar aquela com modelos mais confiáveis
   if (alternativesWith2Votes.length > 1) {
-    // Verificar se alguma das alternativas com 2 votos tem Claude E Gemini concordando
-    const claudeGeminiConsensus = alternativesWith2Votes.find(alt => {
-      const models = modelsByAlternative[alt];
-      return models.includes('claude') && models.includes('gemini');
-    });
-
-    if (claudeGeminiConsensus) {
-      console.log(`Forte consenso parcial: Claude e Gemini concordam na alternativa ${claudeGeminiConsensus}`);
-      return `A alternativa correta é (${claudeGeminiConsensus})`;
-    }
-
-    // Verificar se alguma das alternativas com 2 votos tem Claude E GPT concordando
-    const claudeGptConsensus = alternativesWith2Votes.find(alt => {
-      const models = modelsByAlternative[alt];
-      return models.includes('claude') && models.includes('gpt');
-    });
-
-    if (claudeGptConsensus) {
-      console.log(`Forte consenso parcial: Claude e GPT concordam na alternativa ${claudeGptConsensus}`);
-      return `A alternativa correta é (${claudeGptConsensus})`;
-    }
-
-    // Verificar se alguma das alternativas com 2 votos tem Gemini E GPT concordando
-    const geminiGptConsensus = alternativesWith2Votes.find(alt => {
-      const models = modelsByAlternative[alt];
-      return models.includes('gemini') && models.includes('gpt');
-    });
-
-    if (geminiGptConsensus) {
-      console.log(`Forte consenso parcial: Gemini e GPT concordam na alternativa ${geminiGptConsensus}`);
-      return `A alternativa correta é (${geminiGptConsensus})`;
+    // Verificar consensos entre modelos principais
+    const consensusChecks = [
+      {models: ['claude', 'gemini'], name: 'Claude e Gemini'},
+      {models: ['claude', 'gpt'], name: 'Claude e GPT'},
+      {models: ['claude', 'xai'], name: 'Claude e Grok'},
+      {models: ['gemini', 'gpt'], name: 'Gemini e GPT'},
+      {models: ['gemini', 'xai'], name: 'Gemini e Grok'},
+      {models: ['gpt', 'xai'], name: 'GPT e Grok'}
+    ];
+    
+    for (const check of consensusChecks) {
+      const consensus = alternativesWith2Votes.find(alt => {
+        const models = modelsByAlternative[alt];
+        return models.includes(check.models[0]) && models.includes(check.models[1]);
+      });
+      
+      if (consensus) {
+        console.log(`Forte consenso parcial: ${check.name} concordam na alternativa ${consensus}`);
+        return `A alternativa correta é (${consensus})`;
+      }
     }
 
     // Se chegou aqui, escolher a alternativa com 2 votos que tem maior peso total
@@ -896,8 +1025,8 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   }
 
   // Terceiro: Se chegou aqui, priorizar a resposta do modelo mais confiável
-  // Prioridade: Claude > Gemini > GPT > DeepSeek > Maritaca
-  const modelPriority = ['claude', 'gemini', 'gpt', 'deepseek', 'maritaca'];
+  // Prioridade atualizada para incluir XAI
+  const modelPriority = ['claude', 'gemini', 'gpt', 'xai', 'deepseek', 'maritaca'];
 
   for (const model of modelPriority) {
     const modelResponse = allResponsesWithAlternatives.find(item => item.model === model);
@@ -911,7 +1040,6 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   console.log('Sem nenhum consenso ou modelo prioritário disponível. Usando primeira resposta.');
   return allResponsesWithAlternatives[0].response;
 }
-
 
 // Função auxiliar para calcular similaridade entre strings
 function calculateSimilarity(str1, str2) {
@@ -993,24 +1121,44 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
 
     // Formato completo da questão para enviar aos modelos
     const fullQuestionText = `
-  ${questionData.enunciado}
+${questionData.enunciado}
   
-  ${questionData.alternativas.map(alt => `${alt.letra}) ${alt.texto}`).join('\n')}
-  `;
+${questionData.alternativas.map(alt => `${alt.letra}) ${alt.texto}`).join('\n')}
+`;
 
-    // Consultar todos os modelos de IA em paralelo
-    const [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse] = await Promise.all([
-      askClaude(fullQuestionText),
-      askGPT(fullQuestionText),
-      askGemini(fullQuestionText),
-      askDeepSeek(fullQuestionText),
-      askMaritaca(fullQuestionText)
+    // Consultar todos os modelos de IA em paralelo com timeout de 10 segundos para cada
+    const [claudeResponse, gptResponse, xaiResponse, geminiResponse, deepseekResponse, maritacaResponse] = await Promise.all([
+      askClaude(fullQuestionText).catch(err => {
+        console.error('Erro ao consultar Claude:', err);
+        return null;
+      }),
+      askGPT(fullQuestionText).catch(err => {
+        console.error('Erro ao consultar GPT:', err);
+        return null;
+      }),
+      askXAI(fullQuestionText).catch(err => {
+        console.error('Erro ao consultar XAI (Grok):', err);
+        return null;
+      }),
+      askGemini(fullQuestionText).catch(err => {
+        console.error('Erro ao consultar Gemini:', err);
+        return null;
+      }),
+      askDeepSeek(fullQuestionText).catch(err => {
+        console.error('Erro ao consultar DeepSeek:', err);
+        return null;
+      }),
+      askMaritaca(fullQuestionText).catch(err => {
+        console.error('Erro ao consultar Maritaca:', err);
+        return null;
+      })
     ]);
 
     // Encontrar resposta consensual
     const commonResponse = findCommonResponse(
       claudeResponse,
       gptResponse,
+      xaiResponse,
       geminiResponse,
       deepseekResponse,
       maritacaResponse
@@ -1035,6 +1183,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
       responses: {
         claude: claudeResponse,
         gpt: gptResponse,
+        xai: xaiResponse,
         gemini: geminiResponse,
         deepseek: deepseekResponse,
         maritaca: maritacaResponse

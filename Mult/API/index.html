@@ -263,6 +263,9 @@
 
                     <div class="section-title">Maritaca</div>
                     <div id="maritaca-response"></div>
+
+                    <div class="section-title">XAI (Grok)</div>
+                    <div id="xai-response"></div>
                 </details>
             </div>
         </div>
@@ -289,6 +292,8 @@
             const geminiResponse = document.getElementById('gemini-response');
             const deepseekResponse = document.getElementById('deepseek-response');
             const maritacaResponse = document.getElementById('maritaca-response');
+            const xaiResponse = document.getElementById('xai-response');
+
             
             // Preview da imagem selecionada
             imageUpload.addEventListener('change', function(e) {
@@ -359,6 +364,8 @@
                     geminiResponse.textContent = data.responses?.gemini || 'Sem resposta';
                     deepseekResponse.textContent = data.responses?.deepseek || 'Sem resposta';
                     maritacaResponse.textContent = data.responses?.maritaca || 'Sem resposta';
+                    xaiResponse.textContent = data.responses?.xai || 'Sem resposta';
+
                     
                     // Configurar o link de download da resposta
                     const responseDownloadLink = document.getElementById('response-download-link');
