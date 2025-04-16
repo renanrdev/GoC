@@ -51,6 +51,8 @@ Instruções importantes:
 - Se houver qualquer dúvida ou texto ilegível, indique claramente
 - Preste atenção especial a detalhes como palavras com acentuação
 - Extraia TODOS os detalhes visíveis na imagem
+- Tenha certeza que extraiu todas as alternativas, a maioria das vezes são 5 alternativas
+- Se a imagem contiver uma tabela, extraia os dados da tabela e formate-os corretamente
 `;
 
     // Chamar API de visão do GPT-4

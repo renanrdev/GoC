@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Analisador de Questões - Verdadeiro ou Falso</title>
+    <title>Analisador de Questões - Certo/Errado e Discursivas</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -13,6 +13,8 @@
             --background-light: #f4f6f7;
             --text-dark: #2c3e50;
             --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            --border-color: #ecf0f1;
+            --discursive-color: #9b59b6;
         }
 
         * {
@@ -124,6 +126,25 @@
             padding-bottom: 5px;
         }
 
+        .type-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .type-badge.certo-errado {
+            background-color: rgba(52, 152, 219, 0.2);
+            color: var(--primary-color);
+        }
+        
+        .type-badge.discursiva {
+            background-color: rgba(155, 89, 182, 0.2);
+            color: var(--discursive-color);
+        }
+
         .item-list .item {
             background-color: white;
             border-left: 4px solid var(--primary-color);
@@ -131,6 +152,10 @@
             margin-bottom: 12px;
             border-radius: 4px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+        
+        .item-list .item.discursiva {
+            border-left: 4px solid var(--discursive-color);
         }
 
         .item-list .item-header {
@@ -163,6 +188,14 @@
         .item-list .item-text {
             margin-bottom: 8px;
             line-height: 1.5;
+        }
+
+        .item-list .item-answer {
+            background-color: rgba(155, 89, 182, 0.1);
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            border-left: 3px solid var(--discursive-color);
         }
 
         .item-list .item-justification {
@@ -250,7 +283,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>Analisador de Questões - Verdadeiro ou Falso</h1>
+        <h1>Analisador de Questões - Certo/Errado e Discursivas</h1>
         
         <div class="form-group">
             <label for="image-upload">Selecione uma imagem com as questões:</label>
@@ -270,12 +303,22 @@
         
         <div class="result-container" id="result-container" style="display:none;">
             <div class="result-box">
+                <div class="section-title">
+                    Tipo de Questão 
+                    <span id="question-type-badge" class="type-badge"></span>
+                </div>
+                <div class="text-principal">
+                    <p id="question-type-description"></p>
+                </div>
+            </div>
+            
+            <div class="result-box">
                 <div class="section-title">Texto Principal</div>
                 <div id="texto-principal" class="text-principal"></div>
             </div>
             
             <div class="result-box">
-                <div class="section-title">Análise dos Itens</div>
+                <div class="section-title">Análise dos Itens/Questões</div>
                 <div id="itens-container" class="item-list"></div>
             </div>
             
@@ -297,6 +340,8 @@
             const resultContainer = document.getElementById('result-container');
             
             // Elementos dos resultados
+            const questionTypeBadge = document.getElementById('question-type-badge');
+            const questionTypeDescription = document.getElementById('question-type-description');
             const textoPrincipalEl = document.getElementById('texto-principal');
             const itensContainer = document.getElementById('itens-container');
             
@@ -342,6 +387,18 @@
                     
                     const data = await response.json();
                     
+                    // Mostrar tipo de questão
+                    const isDiscursive = data.tipoQuestao === 'discursiva';
+                    questionTypeBadge.textContent = isDiscursive ? 'DISCURSIVA' : 'CERTO/ERRADO';
+                    questionTypeBadge.className = `type-badge ${isDiscursive ? 'discursiva' : 'certo-errado'}`;
+                    
+                    // Descrição do tipo de questão
+                    if (isDiscursive) {
+                        questionTypeDescription.textContent = 'Estas são questões discursivas que requerem respostas elaboradas. O sistema fornecerá um resumo conciso da resposta recomendada para cada questão.';
+                    } else {
+                        questionTypeDescription.textContent = 'Estas são afirmações de certo/errado (verdadeiro/falso). O sistema analisará cada item e indicará se é VERDADEIRO ou FALSO.';
+                    }
+                    
                     // Preencher o texto principal
                     textoPrincipalEl.textContent = data.textoPrincipal || 'Texto não identificado';
                     
@@ -349,37 +406,66 @@
                     itensContainer.innerHTML = '';
                     if (data.itens && Array.isArray(data.itens)) {
                         data.itens.forEach(item => {
-                            const isVerdadeiro = item.resposta === 'VERDADEIRO';
-                            
                             const itemEl = document.createElement('div');
                             itemEl.classList.add('item');
                             
-                            const itemHeaderEl = document.createElement('div');
-                            itemHeaderEl.classList.add('item-header');
-                            
-                            const itemNumberEl = document.createElement('div');
-                            itemNumberEl.classList.add('item-number');
-                            itemNumberEl.textContent = `Item ${item.numero}`;
-                            
-                            const itemResultEl = document.createElement('div');
-                            itemResultEl.classList.add('item-result');
-                            itemResultEl.classList.add(isVerdadeiro ? 'true' : 'false');
-                            itemResultEl.textContent = item.resposta;
-                            
-                            itemHeaderEl.appendChild(itemNumberEl);
-                            itemHeaderEl.appendChild(itemResultEl);
-                            
-                            const itemTextEl = document.createElement('div');
-                            itemTextEl.classList.add('item-text');
-                            itemTextEl.textContent = item.afirmacao;
-                            
-                            //const itemJustificationEl = document.createElement('div');
-                            //itemJustificationEl.classList.add('item-justification');
-                           // itemJustificationEl.textContent = `Justificativa: ${item.justificativa}`;
-                            
-                            itemEl.appendChild(itemHeaderEl);
-                            itemEl.appendChild(itemTextEl);
-                           // itemEl.appendChild(itemJustificationEl);
+                            if (isDiscursive) {
+                                itemEl.classList.add('discursiva');
+                                
+                                const itemHeaderEl = document.createElement('div');
+                                itemHeaderEl.classList.add('item-header');
+                                
+                                const itemNumberEl = document.createElement('div');
+                                itemNumberEl.classList.add('item-number');
+                                itemNumberEl.textContent = `Questão ${item.numero}`;
+                                
+                                itemHeaderEl.appendChild(itemNumberEl);
+                                
+                                const itemTextEl = document.createElement('div');
+                                itemTextEl.classList.add('item-text');
+                                itemTextEl.textContent = item.afirmacao;
+                                
+                                const itemAnswerEl = document.createElement('div');
+                                itemAnswerEl.classList.add('item-answer');
+                                itemAnswerEl.innerHTML = '<strong>Resposta recomendada:</strong><br>' + item.resposta;
+                                
+                                itemEl.appendChild(itemHeaderEl);
+                                itemEl.appendChild(itemTextEl);
+                                itemEl.appendChild(itemAnswerEl);
+                            } else {
+                                // Para questões de certo/errado
+                                const isVerdadeiro = item.resposta === 'VERDADEIRO';
+                                
+                                const itemHeaderEl = document.createElement('div');
+                                itemHeaderEl.classList.add('item-header');
+                                
+                                const itemNumberEl = document.createElement('div');
+                                itemNumberEl.classList.add('item-number');
+                                itemNumberEl.textContent = `Item ${item.numero}`;
+                                
+                                const itemResultEl = document.createElement('div');
+                                itemResultEl.classList.add('item-result');
+                                itemResultEl.classList.add(isVerdadeiro ? 'true' : 'false');
+                                itemResultEl.textContent = item.resposta;
+                                
+                                itemHeaderEl.appendChild(itemNumberEl);
+                                itemHeaderEl.appendChild(itemResultEl);
+                                
+                                const itemTextEl = document.createElement('div');
+                                itemTextEl.classList.add('item-text');
+                                itemTextEl.textContent = item.afirmacao;
+                                
+                                itemEl.appendChild(itemHeaderEl);
+                                itemEl.appendChild(itemTextEl);
+                                
+                                // Adicionar justificativa se disponível
+                                if (item.justificativa) {
+                                    const itemJustificationEl = document.createElement('div');
+                                    itemJustificationEl.classList.add('item-justification');
+                                    itemJustificationEl.textContent = `Justificativa: ${item.justificativa}`;
+                                    itemEl.appendChild(itemJustificationEl);
+                                }
+                            }
                             
                             itensContainer.appendChild(itemEl);
                         });

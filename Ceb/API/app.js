@@ -13,7 +13,8 @@ const swaggerSpec = require('./swagger');
 const { 
   extractTextFromImage, 
   extractQuestion,
-  formatAnalysisResult 
+  formatAnalysisResult,
+  detectQuestionType
 } = require('./imageProcessor');
 const ocrConfig = require('./ocrConfig');
 
@@ -37,14 +38,12 @@ const GPT_MODELS = [
   "gpt-4.5-preview",
   "gpt-4o",
   "gpt-3.5-turbo",
-
 ];
 
 const XAI_MODELS = [
   "grok-3-beta",
   "grok-3-fast-beta",  // Adicione ou remova modelos conforme necessário
 ];
-
 
 // Configuração dos modelos Gemini (em ordem de preferência)
 const GEMINI_MODELS = [
@@ -228,12 +227,17 @@ function withTimeout(promise, timeoutMs = TIMEOUT_MS, errorMessage = 'Operação
  * @param {string} text - Texto de resposta a ser processado
  * @returns {string|null} - "VERDADEIRO", "FALSO" ou o texto original
  */
-function processResponse(text) {
+function processResponse(text, questionType = 'certo_errado') {
   if (!text) return null;
   
   const normalizedText = text.trim();
   
-  // Verificar padrões em português
+  // Se for questão discursiva, retornar o texto completo
+  if (questionType === 'discursiva') {
+    return normalizedText;
+  }
+  
+  // Para questões de certo/errado, verificar padrões
   if (normalizedText.includes('VERDADEIRO')) return 'VERDADEIRO';
   if (normalizedText.includes('FALSO')) return 'FALSO';
   
@@ -250,13 +254,26 @@ function processResponse(text) {
 }
 
 /**
- * Cria um prompt melhorado para avaliação de verdadeiro/falso
+ * Cria um prompt baseado no tipo de questão
  * @param {string} question - Texto da questão
- * @param {string|number} itemNumber - Número do item
+ * @param {string|number} itemNumber - Número do item ou identificador
+ * @param {string} questionType - Tipo de questão ('certo_errado' ou 'discursiva')
  * @returns {string} - Prompt formatado
  */
-function createPrompt(question, itemNumber) {
-  return `
+function createPrompt(question, itemNumber, questionType = 'certo_errado') {
+  if (questionType === 'discursiva') {
+    return `
+${question}
+
+INSTRUÇÕES IMPORTANTES:
+- Esta é uma questão discursiva
+- Responda com um resumo conciso da resposta correta (entre 50-200 palavras)
+- Seja direto, objetivo e aborde os pontos principais
+- Estruture a resposta com clareza
+`;
+  } else {
+    // Questão de certo/errado (padrão)
+    return `
 ${question}
 
 INSTRUÇÕES IMPORTANTES:
@@ -265,6 +282,7 @@ INSTRUÇÕES IMPORTANTES:
 - NÃO forneça explicações ou justificativas
 - Seja direto e objetivo
 `;
+  }
 }
 
 /**
@@ -279,6 +297,7 @@ async function askModel(options) {
     models, 
     question, 
     itemNumber,
+    questionType,
     makeRequest 
   } = options;
 
@@ -288,7 +307,10 @@ async function askModel(options) {
       return null;
     }
 
-    const prompt = createPrompt(question, itemNumber);
+    const prompt = createPrompt(question, itemNumber, questionType);
+    
+    // Ajustar número de tokens baseado no tipo de questão
+    const maxTokens = questionType === 'discursiva' ? 500 : 50;
     
     // Tentar cada modelo da lista
     for (const modelName of models) {
@@ -302,12 +324,12 @@ async function askModel(options) {
           
           // Fazer a requisição com timeout
           const result = await withTimeout(
-            makeRequest(client, modelName, prompt),
+            makeRequest(client, modelName, prompt, maxTokens),
             TIMEOUT_MS,
             `Timeout de ${TIMEOUT_MS/1000}s excedido ao consultar o modelo ${modelName}`
           );
           
-          return processResponse(result);
+          return processResponse(result, questionType);
           
         } catch (retryError) {
           // Verificar se é um erro de timeout
@@ -357,7 +379,7 @@ async function askModel(options) {
 }
 
 // Implementação específica para o Claude (Anthropic)
-async function askClaude(question, itemNumber) {
+async function askClaude(question, itemNumber, questionType = 'certo_errado') {
   // Verificar se podemos usar a Messages API
   if (!anthropic || typeof anthropic.messages !== 'object' || typeof anthropic.messages.create !== 'function') {
     console.error('A versão da biblioteca @anthropic-ai/sdk não suporta a Messages API necessária para os modelos Claude 3.x');
@@ -365,10 +387,10 @@ async function askClaude(question, itemNumber) {
   }
   
   // Função para fazer a requisição ao Claude
-  const makeClaudeRequest = async (client, modelName, prompt) => {
+  const makeClaudeRequest = async (client, modelName, prompt, maxTokens = 50) => {
     const response = await client.messages.create({
       model: modelName,
-      max_tokens: 50,
+      max_tokens: maxTokens,
       messages: [
         { role: 'user', content: prompt }
       ]
@@ -383,21 +405,26 @@ async function askClaude(question, itemNumber) {
     models: CLAUDE_MODELS,
     question,
     itemNumber,
+    questionType,
     makeRequest: makeClaudeRequest
   });
 }
 
 // Implementação específica para o GPT (OpenAI)
-async function askGPT(question, itemNumber) {
+async function askGPT(question, itemNumber, questionType = 'certo_errado') {
   // Função para fazer a requisição ao GPT
-  const makeGPTRequest = async (client, modelName, prompt) => {
+  const makeGPTRequest = async (client, modelName, prompt, maxTokens = 50) => {
+    const systemPrompt = questionType === 'discursiva' 
+      ? 'You are an expert at answering essay questions with concise and accurate summaries.'
+      : 'You are an expert in public tenders from the CEBRASP examination board';
+      
     const response = await client.chat.completions.create({
       model: modelName,
       messages: [
-        { role: 'system', content: 'You are an expert in public tenders from the CEBRASP examination board' },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 50,
+      max_tokens: maxTokens,
       temperature: 0.1
     });
     
@@ -410,15 +437,21 @@ async function askGPT(question, itemNumber) {
     models: GPT_MODELS,
     question,
     itemNumber,
+    questionType,
     makeRequest: makeGPTRequest
   });
 }
 
 // Implementação específica para o Gemini (Google)
-async function askGemini(question, itemNumber) {
+async function askGemini(question, itemNumber, questionType = 'certo_errado') {
   // Função para fazer a requisição ao Gemini
-  const makeGeminiRequest = async (client, modelName, prompt) => {
-    const model = client.getGenerativeModel({ model: modelName });
+  const makeGeminiRequest = async (client, modelName, prompt, maxTokens = 50) => {
+    const model = client.getGenerativeModel({ 
+      model: modelName,
+      generationConfig: {
+        maxOutputTokens: maxTokens
+      }
+    });
     const result = await model.generateContent(prompt);
     const response = await result.response;
     
@@ -431,22 +464,27 @@ async function askGemini(question, itemNumber) {
     models: GEMINI_MODELS,
     question,
     itemNumber,
+    questionType,
     makeRequest: makeGeminiRequest
   });
 }
 
 // Implementação específica para o DeepSeek
-async function askDeepSeek(question, itemNumber) {
+async function askDeepSeek(question, itemNumber, questionType = 'certo_errado') {
   // Função para fazer a requisição ao DeepSeek
-  const makeDeepSeekRequest = async (client, modelName, prompt) => {
+  const makeDeepSeekRequest = async (client, modelName, prompt, maxTokens = 50) => {
+    const systemPrompt = questionType === 'discursiva' 
+      ? 'You are an expert at answering essay questions with concise and accurate summaries.'
+      : 'You are an expert in public tenders from the CEBRASP examination board.';
+      
     const response = await client.chat.completions.create({
       model: modelName,
       messages: [
-        { role: 'system', content: 'You are an expert in public tenders from the CEBRASP examination board.' },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt }
       ],
       temperature: 0.1,
-      max_tokens: 50
+      max_tokens: maxTokens
     });
     
     return response.choices[0].message.content;
@@ -458,21 +496,22 @@ async function askDeepSeek(question, itemNumber) {
     models: DEEPSEEK_MODELS,
     question,
     itemNumber,
+    questionType,
     makeRequest: makeDeepSeekRequest
   });
 }
 
 // Implementação específica para o Maritaca
-async function askMaritaca(question, itemNumber) {
+async function askMaritaca(question, itemNumber, questionType = 'certo_errado') {
   // Função para fazer a requisição ao Maritaca
-  const makeMaritacaRequest = async (client, modelName, prompt) => {
+  const makeMaritacaRequest = async (client, modelName, prompt, maxTokens = 50) => {
     const response = await client.chat.completions.create({
       model: modelName,
       messages: [
         { role: 'user', content: prompt }
       ],
       temperature: 0.1,
-      max_tokens: 50
+      max_tokens: maxTokens
     });
     
     return response.choices[0].message.content;
@@ -484,21 +523,26 @@ async function askMaritaca(question, itemNumber) {
     models: MARITACA_MODELS,
     question,
     itemNumber,
+    questionType,
     makeRequest: makeMaritacaRequest
   });
 }
 
-async function askXAI(question, itemNumber) {
+async function askXAI(question, itemNumber, questionType = 'certo_errado') {
   // Função para fazer a requisição ao XAI
-  const makeXAIRequest = async (client, modelName, prompt) => {
+  const makeXAIRequest = async (client, modelName, prompt, maxTokens = 50) => {
+    const systemPrompt = questionType === 'discursiva' 
+      ? 'You are an expert at answering essay questions with concise and accurate summaries.'
+      : 'You are an expert in public tenders from the CEBRASP examination board.';
+      
     const response = await client.chat.completions.create({
       model: modelName,
       messages: [
-        { role: 'system', content: 'You are an expert in public tenders from the CEBRASP examination board.' },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt }
       ],
       temperature: 0.1,
-      max_tokens: 50
+      max_tokens: maxTokens
     });
     
     return response.choices[0].message.content;
@@ -510,22 +554,63 @@ async function askXAI(question, itemNumber) {
     models: XAI_MODELS,
     question,
     itemNumber,
+    questionType,
     makeRequest: makeXAIRequest
   });
 }
 
-function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse, xaiResponse) {
-  // Se alguma resposta estiver faltando, retorna as disponíveis
-  const responses = [claudeResponse, gptResponse, geminiResponse, deepseekResponse, maritacaResponse, xaiResponse].filter(r => r && r.trim() !== '');
+function findCommonResponse(responses, questionType = 'certo_errado') {
+  // Verificar se responses é um array
+  if (!Array.isArray(responses)) {
+    console.error('Erro: responses não é um array', typeof responses, responses);
+    
+    // Se responses for um objeto com as respostas dos modelos, converta para array
+    if (responses && typeof responses === 'object') {
+      console.log('Tentando converter objeto para array...');
+      const responseArray = [
+        responses.claude,
+        responses.gpt,
+        responses.gemini,
+        responses.deepseek,
+        responses.maritaca,
+        responses.xai
+      ];
+      responses = responseArray;
+    } else {
+      // Fallback: retornar null se não conseguir corrigir
+      return null;
+    }
+  }
   
-  if (responses.length === 0) {
+  // Extrair respostas não nulas
+  const validResponses = responses.filter(r => r && r.trim() !== '');
+  
+  // Se for uma questão discursiva, escolher a resposta mais completa
+  if (questionType === 'discursiva') {
+    if (validResponses.length === 0) return null;
+    
+    // Ordenar por comprimento e escolher a mais completa (mais longa)
+    // que não exceda 500 caracteres (para evitar respostas excessivamente longas)
+    const sortedResponses = [...validResponses].sort((a, b) => {
+      // Calcular pontuação com base no comprimento (até um limite)
+      const scoreA = Math.min(a.length, 500);
+      const scoreB = Math.min(b.length, 500);
+      return scoreB - scoreA; // Ordenar do maior para o menor
+    });
+    
+    return sortedResponses[0];
+  }
+  
+  // Para questões de certo/errado, manter a lógica original
+  // Se alguma resposta estiver faltando, retorna as disponíveis
+  if (validResponses.length === 0) {
     console.log('Nenhuma resposta válida obtida de nenhum modelo');
     return null;
   }
   
-  if (responses.length === 1) {
-    console.log('Apenas uma resposta válida disponível:', responses[0]);
-    return responses[0];
+  if (validResponses.length === 1) {
+    console.log('Apenas uma resposta válida disponível:', validResponses[0]);
+    return validResponses[0];
   }
   
   // Normalizar respostas para apenas VERDADEIRO ou FALSO
@@ -562,18 +647,21 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   };
   
   // Normalizar e criar array com respostas, modelo e peso
-  const allResponsesWithModels = [
-    { model: 'claude', response: normalizeResponse(claudeResponse), weight: MODEL_WEIGHTS['claude'] },
-    { model: 'gpt', response: normalizeResponse(gptResponse), weight: MODEL_WEIGHTS['gpt'] },
-    { model: 'gemini', response: normalizeResponse(geminiResponse), weight: MODEL_WEIGHTS['gemini'] },
-    { model: 'deepseek', response: normalizeResponse(deepseekResponse), weight: MODEL_WEIGHTS['deepseek'] },
-    { model: 'maritaca', response: normalizeResponse(maritacaResponse), weight: MODEL_WEIGHTS['maritaca'] },
-    { model: 'xai', response: normalizeResponse(xaiResponse), weight: MODEL_WEIGHTS['xai'] }
-  ].filter(item => item.response !== null);
+  // Assumimos que as respostas estão na ordem: claude, gpt, gemini, deepseek, maritaca, xai
+  const modelNames = ['claude', 'gpt', 'gemini', 'deepseek', 'maritaca', 'xai'];
+  
+  const allResponsesWithModels = responses.map((response, index) => {
+    const modelName = index < modelNames.length ? modelNames[index] : 'unknown';
+    return {
+      model: modelName,
+      response: normalizeResponse(response),
+      weight: MODEL_WEIGHTS[modelName] || 1
+    };
+  }).filter(item => item.response !== null);
   
   if (allResponsesWithModels.length === 0) {
     console.log('Nenhuma resposta pôde ser normalizada');
-    return responses[0]; // Retornar a primeira resposta original
+    return validResponses[0]; // Retornar a primeira resposta original
   }
   
   // Contar votos para VERDADEIRO e FALSO
@@ -623,13 +711,16 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
   }
   
   // 3. Verificar se Claude e Gemini concordam (são os modelos mais confiáveis)
-  const claudeResponse2 = allResponsesWithModels.find(item => item.model === 'claude')?.response;
-  const geminiResponse2 = allResponsesWithModels.find(item => item.model === 'gemini')?.response;
-  const xResponse2 = allResponsesWithModels.find(item => item.model === 'xai')?.response;
+  const claudeResponse = allResponsesWithModels.find(item => item.model === 'claude')?.response;
+  const geminiResponse = allResponsesWithModels.find(item => item.model === 'gemini')?.response;
+  const xResponse = allResponsesWithModels.find(item => item.model === 'xai')?.response;
   
-  if (claudeResponse2 && xResponse2 && geminiResponse2 && claudeResponse2 === geminiResponse2 && xResponse2 === geminiResponse2 && xResponse2 === claudeResponse2) {
-    console.log(`Consenso forte: Claude, Gemini e Grok concordam em ${claudeResponse2}`);
-    return claudeResponse2;
+  if (claudeResponse && xResponse && geminiResponse && 
+      claudeResponse === geminiResponse && 
+      xResponse === geminiResponse && 
+      xResponse === claudeResponse) {
+    console.log(`Consenso forte: Claude, Gemini e Grok concordam em ${claudeResponse}`);
+    return claudeResponse;
   }
   
   // 4. Se chegou aqui, retorna o lado com mais votos
@@ -640,20 +731,6 @@ function findCommonResponse(claudeResponse, gptResponse, geminiResponse, deepsee
     console.log(`FALSO vence por ${falsoCount} a ${verdadeiroCount}`);
     return 'FALSO';
   }
-}
-
-// Função auxiliar para calcular similaridade entre strings
-function calculateSimilarity(str1, str2) {
-  const words1 = str1.toLowerCase().split(/\s+/);
-  const words2 = str2.toLowerCase().split(/\s+/);
-  
-  const set1 = new Set(words1);
-  const set2 = new Set(words2);
-  
-  const intersection = new Set([...set1].filter(x => set2.has(x)));
-  const union = new Set([...set1, ...set2]);
-  
-  return intersection.size / union.size;
 }
 
 // Função para salvar a resposta em um arquivo de texto
@@ -683,56 +760,51 @@ async function saveResponseToFile(text) {
 
 
 /**
- * Função para executar todos os modelos de IA (Claude, GPT, XAI, etc.) em paralelo
+ * Função para executar todos os modelos de IA em paralelo
  * @param {string} question - Texto da questão
- * @param {string|number} itemNumber - Número do item
+ * @param {string|number} itemNumber - Número do item ou identificador
+ * @param {string} questionType - Tipo de questão ('certo_errado' ou 'discursiva')
  * @returns {Promise<Object>} - Objeto com respostas de todos os modelos
  */
-async function askAllModelsInParallel(question, itemNumber) {
-  console.log(`Consultando todos os modelos de IA em paralelo para o item ${itemNumber}`);
+async function askAllModelsInParallel(question, itemNumber, questionType = 'certo_errado') {
+  console.log(`Consultando todos os modelos de IA em paralelo para o item ${itemNumber} (tipo: ${questionType})`);
   
   // Executar todas as plataformas de IA em paralelo
   const results = await Promise.allSettled([
     // Cada uma dessas funções tentará seus diferentes modelos em sequência
-    askClaude(question, itemNumber),
-    askGPT(question, itemNumber),
-    askGemini(question, itemNumber),
-    askDeepSeek(question, itemNumber),
-    askMaritaca(question, itemNumber),
-    askXAI(question, itemNumber)
+    askClaude(question, itemNumber, questionType),
+    askGPT(question, itemNumber, questionType),
+    askGemini(question, itemNumber, questionType),
+    askDeepSeek(question, itemNumber, questionType),
+    askMaritaca(question, itemNumber, questionType),
+    askXAI(question, itemNumber, questionType)
   ]);
   
   // Extrair resultados, tratando possíveis falhas
-  const [
-    claudeResponse, 
-    gptResponse, 
-    geminiResponse, 
-    deepseekResponse, 
-    maritacaResponse,
-    xaiResponse
-  ] = results.map(result => 
+  const responseArray = results.map(result => 
     result.status === 'fulfilled' ? result.value : null
   );
   
   // Logar quais plataformas responderam
   console.log("Respostas obtidas:");
-  console.log("- Claude:", claudeResponse ? "✅" : "❌");
-  console.log("- GPT:", gptResponse ? "✅" : "❌");
-  console.log("- Gemini:", geminiResponse ? "✅" : "❌");
-  console.log("- DeepSeek:", deepseekResponse ? "✅" : "❌");
-  console.log("- Maritaca:", maritacaResponse ? "✅" : "❌");
-  console.log("- XAI:", xaiResponse ? "✅" : "❌");
+  console.log("- Claude:", responseArray[0] ? "✅" : "❌");
+  console.log("- GPT:", responseArray[1] ? "✅" : "❌");
+  console.log("- Gemini:", responseArray[2] ? "✅" : "❌");
+  console.log("- DeepSeek:", responseArray[3] ? "✅" : "❌");
+  console.log("- Maritaca:", responseArray[4] ? "✅" : "❌");
+  console.log("- XAI:", responseArray[5] ? "✅" : "❌");
   
   return {
-    claude: claudeResponse,
-    gpt: gptResponse,
-    gemini: geminiResponse,
-    deepseek: deepseekResponse,
-    maritaca: maritacaResponse,
-    xai: xaiResponse
+    claude: responseArray[0],
+    gpt: responseArray[1],
+    gemini: responseArray[2],
+    deepseek: responseArray[3],
+    maritaca: responseArray[4],
+    xai: responseArray[5],
+    // Incluir o array diretamente para facilitar o processamento
+    responseArray: responseArray
   };
 }
-
 
 /**
  * @swagger
@@ -772,80 +844,95 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     // Extrair texto e itens da imagem
     const extractedData = await extractTextFromImage(req.file.path);
     
-    console.log(`Analisando ${extractedData.itens.length} itens...`);
+    // Detectar o tipo de questão (certo_errado ou discursiva)
+    const questionType = await detectQuestionType(extractedData);
+    console.log(`Tipo de questão detectado: ${questionType}`);
+    
+    console.log(`Analisando ${extractedData.itens.length} ${questionType === 'discursiva' ? 'perguntas discursivas' : 'itens de certo/errado'}...`);
     
     // Analisar cada item em paralelo
     const itensAnalysed = await Promise.all(extractedData.itens.map(async (item) => {
-      console.log(`Analisando item ${item.numero}...`);
+      console.log(`Analisando ${questionType === 'discursiva' ? 'questão' : 'item'} ${item.numero}...`);
 
       // Preparar o texto completo para análise (texto principal + item)
       const fullText = `${extractedData.texto_principal}\n\n${item.afirmacao}`;
 
       // Consultar todos os modelos de IA em paralelo
-      const modelResponses = await askAllModelsInParallel(fullText, item.numero);
+      const modelResponses = await askAllModelsInParallel(fullText, item.numero, questionType);
 
-      // Encontrar resposta consensual
+      // Encontrar resposta consensual ou melhor resposta
+      // Garantir que estamos passando um array para a função findCommonResponse
       const commonResponse = findCommonResponse(
-        modelResponses.claude, 
-        modelResponses.gpt, 
-        modelResponses.gemini, 
-        modelResponses.deepseek, 
-        modelResponses.maritaca,
-        modelResponses.xai
+        modelResponses.responseArray, // Usar o array de respostas
+        questionType
       );
 
-      // Solicitar uma justificativa
-//       let justificativa = '';
-//       try {
-//         if (anthropic) {
-//           const justPrompt = `
-// ${extractedData.texto_principal}
+      // Gerar justificativa para questões de certo/errado
+      let justificativa = '';
+      if (questionType === 'certo_errado' && commonResponse) {
+        try {
+          if (anthropic) {
+            const justPrompt = `
+${extractedData.texto_principal}
 
-// Item ${item.numero}: ${item.afirmacao}
+Item ${item.numero}: ${item.afirmacao}
 
-// Este item foi avaliado como ${commonResponse}.
+Este item foi avaliado como ${commonResponse}.
 
-// Por favor, forneça uma justificativa concisa para esta resposta, explicando por que o item é ${commonResponse} com base no texto.
-// Mantenha a explicação objetiva e direta, com no máximo 2-3 frases.
-// `;
+Por favor, forneça uma justificativa concisa para esta resposta, explicando por que o item é ${commonResponse} com base no texto.
+Mantenha a explicação objetiva e direta, com no máximo 2-3 frases.
+`;
 
-//           for (const modelName of CLAUDE_MODELS) {
-//             try {
-//               const justResponse = await anthropic.messages.create({
-//                 model: modelName,
-//                 max_tokens: 150,
-//                 messages: [
-//                   { role: 'user', content: justPrompt }
-//                 ]
-//               });
-              
-//               justificativa = justResponse.content[0].text.trim();
-//               break; // Se conseguiu, sai do loop
-//             } catch (err) {
-//               console.log(`Erro ao obter justificativa do modelo ${modelName}, tentando outro...`);
-//             }
-//           }
-//         }
-//       } catch (error) {
-//         console.error('Erro ao obter justificativa:', error);
-//         justificativa = 'Não foi possível gerar uma justificativa.';
-//       }
+            for (const modelName of CLAUDE_MODELS) {
+              try {
+                const justResponse = await anthropic.messages.create({
+                  model: modelName,
+                  max_tokens: 150,
+                  messages: [
+                    { role: 'user', content: justPrompt }
+                  ]
+                });
+                
+                justificativa = justResponse.content[0].text.trim();
+                break; // Se conseguiu, sai do loop
+              } catch (err) {
+                console.log(`Erro ao obter justificativa do modelo ${modelName}, tentando outro...`);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Erro ao obter justificativa:', error);
+          justificativa = 'Não foi possível gerar uma justificativa.';
+        }
 
-//       if (!justificativa) {
-//         justificativa = 'Não foi possível gerar uma justificativa.';
-//       }
+        if (!justificativa) {
+          justificativa = 'Não foi possível gerar uma justificativa.';
+        }
+      } else {
+        // Para questões discursivas, a própria resposta já é a justificativa
+        justificativa = '';
+      }
 
       return {
         ...item,
-        resposta: commonResponse,
-        //justificativa: justificativa,
-        respostas_modelos: modelResponses
+        tipo: questionType,
+        resposta: commonResponse || 'Não foi possível determinar uma resposta',
+        justificativa: justificativa,
+        respostas_modelos: {
+          claude: modelResponses.claude,
+          gpt: modelResponses.gpt,
+          gemini: modelResponses.gemini,
+          deepseek: modelResponses.deepseek,
+          maritaca: modelResponses.maritaca,
+          xai: modelResponses.xai
+        }
       };
     }));
 
     // Criar objeto com resultados completos
     const analysisData = {
       texto_principal: extractedData.texto_principal,
+      tipo_questao: questionType,
       itens: itensAnalysed
     };
     
@@ -861,6 +948,7 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     // Enviar resposta JSON
     res.json({
       success: true,
+      tipoQuestao: questionType,
       textoPrincipal: analysisData.texto_principal,
       itens: analysisData.itens,
       responseUrl: responseUrl,
@@ -874,6 +962,8 @@ app.post('/api/analyze', upload.single('image'), async (req, res) => {
     });
   }
 });
+
+
 
 /**
  * @swagger
